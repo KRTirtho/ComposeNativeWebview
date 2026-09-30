@@ -67,6 +67,10 @@ tasks.matching { it.name == "run" || it.name == "jvmRun" }.configureEach {
         Os.isFamily(Os.FAMILY_MAC) ->
             dependsOn(":webview-compose:buildNativeMacos")
         Os.isFamily(Os.FAMILY_UNIX) ->
-            dependsOn(":webview-compose:buildNativeLinux")
+            dependsOn(":webview-compose:buildNativeLinux", ":webview-compose:buildNativeLinuxCef")
     }
+}
+
+tasks.withType<JavaExec>().configureEach {
+    jvmArgs("-XX:ErrorFile=${rootProject.layout.buildDirectory.get()}/hs_err_e2e.log")
 }

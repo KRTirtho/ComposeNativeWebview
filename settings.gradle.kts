@@ -35,6 +35,7 @@ plugins {
 }
 
 include(":demo-desktop")
+include(":cef-prototype")
 include(":e2e-desktop")
 include(":e2e-shared")
 include(":e2e-android")

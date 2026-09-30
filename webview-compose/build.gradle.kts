@@ -21,6 +21,7 @@ plugins {
 // Locally, only the host platform is built (and only if the artifact is missing).
 
 val nativeLinuxDir = layout.projectDirectory.dir("src/jvmMain/native/linux")
+val nativeLinuxCefDir = layout.projectDirectory.dir("src/jvmMain/native/linux-cef")
 val nativeMacosDir = layout.projectDirectory.dir("src/jvmMain/native/macos")
 val nativeWindowsDir = layout.projectDirectory.dir("src/jvmMain/native/windows")
 val nativeResourceDir = layout.projectDirectory.dir("src/jvmMain/resources/nucleus/native")
@@ -41,6 +42,33 @@ val buildNativeLinux by tasks.registering(Exec::class) {
     outputs.file(checkFile)
     workingDir(nativeLinuxDir.asFile)
     commandLine("bash", "build.sh")
+}
+
+val buildNativeLinuxCef by tasks.registering(Exec::class) {
+    description =
+        "Downloads the CEF SDK and builds the direct-CEF Linux backend " +
+            "(libcompose_cef_linux.so + cef_subprocess + CEF runtime)"
+    group = "build"
+    val arch = System.getProperty("os.arch").lowercase()
+    val archDir =
+        if (arch.contains("aarch64") || arch.contains("arm64")) "linux-aarch64" else "linux-x64"
+    val checkFile = nativeResourceDir.file("$archDir/libcompose_cef_linux.so").asFile
+    onlyIf {
+        Os.isFamily(Os.FAMILY_UNIX) &&
+            !Os.isFamily(Os.FAMILY_MAC) &&
+            !checkFile.exists()
+    }
+    inputs.dir(nativeLinuxCefDir)
+    outputs.file(checkFile)
+    workingDir(nativeLinuxCefDir.asFile)
+    commandLine("bash", "build.sh")
+    doLast {
+        check(checkFile.exists()) {
+            "buildNativeLinuxCef finished but ${checkFile.name} is missing. " +
+                "Need cmake + ninja + pkg-config gtk+-3.0 + JAVA_HOME. Run: " +
+                "webview-compose/src/jvmMain/native/linux-cef/build.sh"
+        }
+    }
 }
 
 val buildNativeMacos by tasks.registering(Exec::class) {
@@ -91,12 +119,12 @@ tasks.matching {
         it.name == "processJvmMainResources" ||
         it.name == "jvmJar"
 }.configureEach {
-    dependsOn(buildNativeLinux, buildNativeMacos, buildNativeWindows)
+    dependsOn(buildNativeLinux, buildNativeLinuxCef, buildNativeMacos, buildNativeWindows)
 }
 
 tasks.configureEach {
     if (name == "sourcesJar" || name == "jvmSourcesJar") {
-        dependsOn(buildNativeLinux, buildNativeMacos, buildNativeWindows)
+        dependsOn(buildNativeLinux, buildNativeLinuxCef, buildNativeMacos, buildNativeWindows)
     }
 }
 

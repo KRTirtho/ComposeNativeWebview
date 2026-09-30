@@ -5,9 +5,12 @@
 - `webview-compose/`: Compose Multiplatform WebView library exposing `dev.nucleusframework.webview.*`
   (`WebView`, `WebViewState`, `WebViewNavigator`).
   - Shared API/types: `webview-compose/src/commonMain/kotlin/...`.
-  - Platform actuals: `.../src/jvmMain/` (desktop: Linux WebKit2GTK + macOS WKWebView + Windows WebView2),
+  - Platform actuals: `.../src/jvmMain/` (desktop: Linux WebKit2GTK + Linux direct-CEF + macOS WKWebView + Windows WebView2),
     `.../src/androidMain/` (Android WebView),
     `.../src/iosMain/` (WKWebView + cinterop in `.../src/nativeInterop/`), `.../src/wasmJsMain/` (IFrame).
+  - Linux CEF backend sources: `src/jvmMain/native/linux-cef/` (windowless Chromium + GTK OSR,
+    native GTK context menu of Chromium essentials). Selected via
+    `DesktopWebSettings.linuxBackend` (`LinuxWebBackend.CEF` default, `WEBKIT` fallback).
   - Unit tests: `src/commonTest/` (JVM / Android host / iOS simulator / Wasm browser).
 - `e2e-shared/`: **shared multiplatform visual e2e suite** (`visualsuite/*` in `commonMain`) —
   same catalog of cases on every platform; capabilities skip only what the host cannot do.
@@ -31,9 +34,12 @@
   ./gradlew :webview-compose:iosSimulatorArm64Test $COMMON   # macOS
   ./gradlew :webview-compose:wasmJsBrowserTest $COMMON
   ```
-- `./gradlew :webview-compose:buildNativeLinux` / `buildNativeMacos` / `buildNativeWindows`:
+- `./gradlew :webview-compose:buildNativeLinux` / `buildNativeLinuxCef` / `buildNativeMacos` / `buildNativeWindows`:
   host native WebView backends into `webview-compose/src/jvmMain/resources/nucleus/native/…`
-  (not committed; CI matrix builds them).
+  (not committed; CI matrix builds them). `buildNativeLinuxCef` downloads the CEF SDK at build
+  time (~292 MiB) and stages the full CEF runtime + `libcompose_cef_linux.so` + `cef_subprocess`.
+- `cef-prototype/`: isolated direct-CEF C++/GTK prototype (not part of the library); run with
+  `./gradlew :cef-prototype:run`.
 - CI: `.github/workflows/build-natives.yaml` + `.github/workflows/pr-build-check.yml`
   (unit commonTest on all targets + visual e2e on desktop matrix + Android emulator).
 - GraalVM (e2e desktop): `nucleus.application { graalvm { isEnabled = true … } }`.

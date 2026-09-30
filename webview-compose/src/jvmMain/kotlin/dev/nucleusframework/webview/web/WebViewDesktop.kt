@@ -16,6 +16,9 @@ import dev.nucleusframework.webview.jsbridge.jsBridgeObjectScript
 import dev.nucleusframework.webview.jsbridge.parseJsMessage
 import dev.nucleusframework.webview.request.WebRequest
 import dev.nucleusframework.webview.request.WebRequestInterceptResult
+import dev.nucleusframework.webview.setting.LinuxWebBackend
+import dev.nucleusframework.webview.web.linux.CefLinuxBridge
+import dev.nucleusframework.webview.web.linux.LinuxCefNativeWebView
 import dev.nucleusframework.webview.web.linux.LinuxWebKitNativeWebView
 import dev.nucleusframework.webview.web.linux.WebKitLinuxBridge
 import dev.nucleusframework.webview.web.macos.MacOsWebKitNativeWebView
@@ -77,19 +80,37 @@ actual fun defaultWebViewFactory(param: WebViewFactoryParam): NativeWebView {
             if (c.alpha < 1f) androidx.compose.ui.graphics.Color.White else c.copy(alpha = 1f)
         }
 
-    if (Platform.Current == Platform.Linux && WebKitLinuxBridge.isLoaded) {
-        return LinuxWebKitNativeWebView(
-            customUserAgent = settings.customUserAgentString,
-            dataDirectory = desktop.dataDirectory,
-            initScript = desktop.initScript,
-            jsBridgeScript = bridgeScript,
-            incognito = desktop.incognito,
-            enableDevtools = desktop.enableDevtools,
-            javascriptEnabled = settings.isJavaScriptEnabled,
-            zoomLevel = settings.zoomLevel,
-            transparent = desktop.transparent,
-            backgroundColor = background,
-        )
+    if (Platform.Current == Platform.Linux) {
+        val useCef = desktop.linuxBackend == LinuxWebBackend.CEF && CefLinuxBridge.isAvailable
+        if (useCef) {
+            return LinuxCefNativeWebView(
+                customUserAgent = settings.customUserAgentString,
+                dataDirectory = desktop.dataDirectory,
+                initScript = desktop.initScript,
+                jsBridgeScript = bridgeScript,
+                incognito = desktop.incognito,
+                enableDevtools = desktop.enableDevtools,
+                javascriptEnabled = settings.isJavaScriptEnabled,
+                zoomLevel = settings.zoomLevel,
+                transparent = desktop.transparent,
+                backgroundColor = background,
+                initialUrl = (param.state.content as? WebContent.Url)?.url,
+            )
+        }
+        if (WebKitLinuxBridge.isLoaded) {
+            return LinuxWebKitNativeWebView(
+                customUserAgent = settings.customUserAgentString,
+                dataDirectory = desktop.dataDirectory,
+                initScript = desktop.initScript,
+                jsBridgeScript = bridgeScript,
+                incognito = desktop.incognito,
+                enableDevtools = desktop.enableDevtools,
+                javascriptEnabled = settings.isJavaScriptEnabled,
+                zoomLevel = settings.zoomLevel,
+                transparent = desktop.transparent,
+                backgroundColor = background,
+            )
+        }
     }
 
     if (Platform.Current == Platform.MacOS && WebKitMacOsBridge.isLoaded) {
@@ -132,6 +153,7 @@ actual fun defaultWebViewFactory(param: WebViewFactoryParam): NativeWebView {
 
 private fun NativeWebView.isLiveBackend(): Boolean =
     this is LinuxWebKitNativeWebView ||
+        this is LinuxCefNativeWebView ||
         this is MacOsWebKitNativeWebView ||
         this is WindowsWebView2NativeWebView
 
@@ -320,13 +342,25 @@ actual fun ActualWebView(
         }
     }
 
-    val linuxWebView = nativeWebView as? LinuxWebKitNativeWebView
+    val linuxWebKitWebView = nativeWebView as? LinuxWebKitNativeWebView
+    val linuxCefWebView = nativeWebView as? LinuxCefNativeWebView
     val macosWebView = nativeWebView as? MacOsWebKitNativeWebView
     val windowsWebView = nativeWebView as? WindowsWebView2NativeWebView
     when {
-        linuxWebView != null && LocalWebViewFactory.current == null -> {
+        linuxWebKitWebView != null && LocalWebViewFactory.current == null -> {
             NativeView(
-                factory = { linuxWebView.asPlatformView() },
+                factory = { linuxWebKitWebView.asPlatformView() },
+                modifier = modifier,
+                update = { },
+                content = content,
+            )
+            LaunchedEffect(nativeWebView) {
+                onCreated(nativeWebView)
+            }
+        }
+        linuxCefWebView != null && LocalWebViewFactory.current == null -> {
+            NativeView(
+                factory = { linuxCefWebView.asPlatformView() },
                 modifier = modifier,
                 update = { },
                 content = content,

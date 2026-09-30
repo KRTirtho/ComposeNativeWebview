@@ -2,6 +2,7 @@ package dev.nucleusframework.webview.cookie
 
 import dev.nucleusframework.webview.util.KLogger
 import dev.nucleusframework.webview.web.NativeWebView
+import dev.nucleusframework.webview.web.linux.LinuxCefNativeWebView
 import dev.nucleusframework.webview.web.linux.LinuxWebKitNativeWebView
 import dev.nucleusframework.webview.web.macos.MacOsWebKitNativeWebView
 import dev.nucleusframework.webview.web.windows.WindowsWebView2NativeWebView
@@ -56,6 +57,17 @@ internal class DesktopCookieManager : CookieManager {
                         expiresMs = cookie.expiresDate ?: 0L,
                         sameSite = sameSiteString(cookie),
                     )
+                is LinuxCefNativeWebView ->
+                    native.setCookieNative(
+                        name = cookie.name,
+                        value = cookie.value,
+                        domain = domain,
+                        path = cookie.path ?: "/",
+                        secure = cookie.isSecure == true,
+                        httpOnly = cookie.isHttpOnly == true,
+                        expiresMs = cookie.expiresDate ?: 0L,
+                        sameSite = sameSiteString(cookie),
+                    )
                 is MacOsWebKitNativeWebView ->
                     native.setCookieNative(
                         name = cookie.name,
@@ -90,6 +102,7 @@ internal class DesktopCookieManager : CookieManager {
                 val raw =
                     when (native) {
                         is LinuxWebKitNativeWebView -> native.getCookiesJson(url)
+                        is LinuxCefNativeWebView -> native.getCookiesJson(url)
                         is MacOsWebKitNativeWebView -> native.getCookiesJson(url)
                         is WindowsWebView2NativeWebView -> native.getCookiesJson(url)
                         else -> return@withContext emptyList()
@@ -108,6 +121,7 @@ internal class DesktopCookieManager : CookieManager {
             runCatching {
                 when (native) {
                     is LinuxWebKitNativeWebView -> native.removeAllCookiesNative()
+                    is LinuxCefNativeWebView -> native.removeAllCookiesNative()
                     is MacOsWebKitNativeWebView -> native.removeAllCookiesNative()
                     is WindowsWebView2NativeWebView -> native.removeAllCookiesNative()
                     else -> Unit
@@ -122,6 +136,7 @@ internal class DesktopCookieManager : CookieManager {
             runCatching {
                 when (native) {
                     is LinuxWebKitNativeWebView -> native.removeCookiesForUrlNative(url)
+                    is LinuxCefNativeWebView -> native.removeCookiesForUrlNative(url)
                     is MacOsWebKitNativeWebView -> native.removeCookiesForUrlNative(url)
                     is WindowsWebView2NativeWebView -> native.removeCookiesForUrlNative(url)
                     else -> Unit

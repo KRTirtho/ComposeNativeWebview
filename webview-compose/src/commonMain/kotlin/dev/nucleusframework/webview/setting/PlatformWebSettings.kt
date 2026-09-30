@@ -3,6 +3,17 @@ package dev.nucleusframework.webview.setting
 import androidx.compose.ui.graphics.Color
 
 /**
+ * Linux WebView engine selection.
+ */
+enum class LinuxWebBackend {
+    /** WebKit2GTK. Always available when its native lib is built. */
+    WEBKIT,
+
+    /** Chromium Embedded Framework (direct CEF + GTK OSR). Falls back to [WEBKIT] when its runtime is not bundled. */
+    CEF,
+}
+
+/**
  * Platform-specific settings containers.
  */
 sealed class PlatformWebSettings {
@@ -28,6 +39,12 @@ sealed class PlatformWebSettings {
         var incognito: Boolean = false,
         var autoplayWithoutUserInteraction: Boolean = false,
         var focused: Boolean = true,
+        /**
+         * Linux only: which engine to use. Defaults to [LinuxWebBackend.CEF]
+         * (Chromium) and silently falls back to [LinuxWebBackend.WEBKIT] when
+         * the CEF runtime is not bundled in the application.
+         */
+        var linuxBackend: LinuxWebBackend = LinuxWebBackend.CEF,
     ) : PlatformWebSettings()
 
     data class IOSWebSettings(

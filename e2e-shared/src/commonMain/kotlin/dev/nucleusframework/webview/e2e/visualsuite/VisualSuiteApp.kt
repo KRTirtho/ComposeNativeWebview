@@ -110,6 +110,10 @@ fun VisualSuiteApp(
             it.webSettings.desktopWebSettings.transparent = false
             it.webSettings.backgroundColor = Color.White
             it.webSettings.isJavaScriptEnabled = true
+            if (System.getProperty("e2e.linux.backend") == "webkit") {
+                it.webSettings.desktopWebSettings.linuxBackend =
+                    dev.nucleusframework.webview.setting.LinuxWebBackend.WEBKIT
+            }
         }
     val jsBridge = rememberWebViewJsBridge(navigator)
 
