@@ -20,6 +20,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -37,6 +38,7 @@
 #include "include/cef_load_handler.h"
 #include "include/cef_menu_model.h"
 #include "include/cef_render_handler.h"
+#include "include/cef_resource_request_handler.h"
 #include "include/cef_request_handler.h"
 #include "include/cef_task.h"
 #include "include/wrapper/cef_message_router.h"
@@ -146,6 +148,9 @@ struct ComposeCefViewState : public std::enable_shared_from_this<ComposeCefViewS
     std::string initial_url;
     std::string init_script;
     std::string js_bridge_script;
+
+    /* One-shot headers for LoadURL navigations, consumed on CEF's IO thread. */
+    std::map<std::string, CefRequest::HeaderMap> navigation_headers;
 
     /* Context-menu plumbing (context_menu.cpp). */
     GdkEvent *last_context_event = nullptr;

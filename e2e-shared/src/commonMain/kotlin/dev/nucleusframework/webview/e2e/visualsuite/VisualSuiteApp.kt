@@ -199,6 +199,7 @@ fun VisualSuiteApp(
         var passed = false
         try {
             runFullSuite(ctx) { id, status, detail ->
+                println("Visual E2E $id: $status${if (detail.isEmpty()) "" else " ($detail)"}")
                 currentId = id
                 updateCase(id, status, detail)
                 summary =

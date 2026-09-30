@@ -76,13 +76,16 @@ Java_dev_nucleusframework_webview_web_linux_CefLinuxBridge_nativeLoadUrlWithHead
             env->DeleteLocalRef(jv);
         }
     }
-    postBrowserOp(handle, [u, headers](CefRefPtr<CefBrowser> b) {
-        CefRefPtr<CefRequest> request = CefRequest::Create();
-        request->SetURL(CefString(u));
-        request->SetMethod("GET");
-        CefRequest::HeaderMap map = headers;
-        request->SetHeaderMap(map);
-        b->GetMainFrame()->LoadRequest(request);
+    std::shared_ptr<ComposeCefViewState> state = compose_cef_shared_from_handle(handle);
+    if (state == nullptr) return;
+    postBrowserOp(handle, [state, u, headers](CefRefPtr<CefBrowser> b) {
+        if (u.starts_with("http://") || u.starts_with("https://")) {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->navigation_headers[u] = headers;
+        }
+        // LoadRequest from a different origin terminates the renderer with
+        // INVALID_INITIATOR_ORIGIN (213). LoadURL is safe for navigation.
+        b->GetMainFrame()->LoadURL(CefString(u));
     });
 }
 

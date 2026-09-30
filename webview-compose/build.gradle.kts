@@ -55,8 +55,7 @@ val buildNativeLinuxCef by tasks.registering(Exec::class) {
     val checkFile = nativeResourceDir.file("$archDir/libcompose_cef_linux.so").asFile
     onlyIf {
         Os.isFamily(Os.FAMILY_UNIX) &&
-            !Os.isFamily(Os.FAMILY_MAC) &&
-            !checkFile.exists()
+            !Os.isFamily(Os.FAMILY_MAC)
     }
     inputs.dir(nativeLinuxCefDir)
     outputs.file(checkFile)

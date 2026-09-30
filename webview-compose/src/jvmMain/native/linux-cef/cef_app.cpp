@@ -96,6 +96,9 @@ bool compose_cef_initialize(const std::string &runtime_dir, const std::string &c
     CefMainArgs main_args(1, g_cef_argv);
     CefSettings settings;
     settings.no_sandbox = true;
+    // HotSpot uses SIGSEGV for implicit null checks. CEF must not replace the
+    // JVM's signal handler, or ordinary Java null checks can kill the process.
+    settings.disable_signal_handlers = true;
     settings.multi_threaded_message_loop = true;
     settings.windowless_rendering_enabled = true;
     CefString(&settings.browser_subprocess_path).FromString(ensureSubprocessShim(runtime_dir));

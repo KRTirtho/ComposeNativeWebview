@@ -2,6 +2,7 @@ package dev.nucleusframework.webview.web
 
 import dev.nucleusframework.webview.jsbridge.WebViewJsBridge
 import dev.nucleusframework.webview.util.KLogger
+import dev.nucleusframework.webview.web.linux.LinuxCefNativeWebView
 import dev.nucleusframework.webview.web.linux.LinuxWebKitNativeWebView
 import dev.nucleusframework.webview.web.macos.MacOsWebKitNativeWebView
 import dev.nucleusframework.webview.web.windows.WindowsWebView2NativeWebView
@@ -122,6 +123,7 @@ internal class DesktopWebView(
 
     override suspend fun captureScreenshotOrNull(): ByteArray? {
         when (val native = nativeWebView) {
+            is LinuxCefNativeWebView -> return native.captureScreenshotAsync()
             is LinuxWebKitNativeWebView -> return native.captureScreenshotAsync()
             is MacOsWebKitNativeWebView -> return native.captureScreenshotAsync()
             is WindowsWebView2NativeWebView -> return native.captureScreenshotAsync()

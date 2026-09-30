@@ -54,6 +54,17 @@ private:
     IMPLEMENT_REFCOUNTING(CookieVisitor);
 };
 
+class DeleteUrlCookieVisitor final : public CefCookieVisitor {
+public:
+    bool Visit(const CefCookie &, int, int, bool &delete_cookie) override {
+        delete_cookie = true;
+        return true;
+    }
+
+private:
+    IMPLEMENT_REFCOUNTING(DeleteUrlCookieVisitor);
+};
+
 void withCookieManager(std::function<void(CefRefPtr<CefCookieManager>)> op) {
     compose_cef_post_to_ui([op = std::move(op)] {
         CefRefPtr<CefCookieManager> manager = CefCookieManager::GetGlobalManager(nullptr);
@@ -126,7 +137,9 @@ Java_dev_nucleusframework_webview_web_linux_CefLinuxBridge_nativeRemoveCookiesFo
     JNIEnv *env, jclass, jlong /*handle*/, jstring url) {
     const std::string u = compose_cef_jstring_to_utf8(env, url);
     withCookieManager([u](CefRefPtr<CefCookieManager> manager) {
-        manager->DeleteCookies(CefString(u), CefString(), nullptr);
+        // DeleteCookies(url, "") excludes domain cookies. VisitUrlCookies
+        // includes both host and domain cookies matching the URL.
+        manager->VisitUrlCookies(CefString(u), true, new DeleteUrlCookieVisitor());
     });
 }
 

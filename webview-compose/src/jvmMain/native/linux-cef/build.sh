@@ -70,14 +70,8 @@ cp -a "$CEF_OUTPUT_DIR/libcompose_cef_linux.so" "$RESOURCE_DIR/libcompose_cef_li
 cp -a "$CEF_OUTPUT_DIR/cef_subprocess" "$RESOURCE_DIR/cef_subprocess"
 chmod 755 "$RESOURCE_DIR/cef_subprocess"
 
-# NativeLibraryLoader extracts sidecars next to the bridge; make sure the
-# loader's stale cache is cleared so the new build is picked up.
-for CACHE_DIR in "$HOME/.cache/nucleus/native"; do
-    if [ -d "$CACHE_DIR" ]; then
-        rm -rf "$CACHE_DIR"
-        echo "Cleared NativeLibraryLoader cache: $CACHE_DIR"
-    fi
-done
+# NativeLibraryLoader content-addresses the bridge and sidecars, so a changed
+# library gets a new cache path without deleting other applications' natives.
 
 echo "Built and staged the CEF Linux backend into $RESOURCE_DIR"
 ls -lh "$RESOURCE_DIR/libcompose_cef_linux.so" "$RESOURCE_DIR/libcef.so" "$RESOURCE_DIR/cef_subprocess"

@@ -1,5 +1,6 @@
 #include "compose_cef_internal.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <unordered_map>
@@ -61,12 +62,17 @@ void createBrowserForView(const std::shared_ptr<ComposeCefViewState> &state) {
     CefBrowserSettings browser_settings;
     browser_settings.windowless_frame_rate = 60;
     browser_settings.background_color = CefColorSetARGB(0xFF, 0xFF, 0xFF, 0xFF);
+    CefRefPtr<CefDictionaryValue> extra_info = CefDictionaryValue::Create();
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        extra_info->SetString("bridge_script", state->js_bridge_script);
+    }
     const bool created = CefBrowserHost::CreateBrowser(
         window_info,
         client,
         CefString(url.empty() ? "about:blank" : url),
         browser_settings,
-        nullptr,
+        extra_info,
         nullptr);
     if (!created) {
         {
@@ -212,11 +218,24 @@ void compose_cef_release(const std::shared_ptr<ComposeCefViewState> &s) {
     if (browser.get() != nullptr) {
         compose_cef_post_to_ui([browser] { browser->GetHost()->CloseBrowser(true); });
     }
+    bool closed = false;
+    {
+        std::unique_lock<std::mutex> lock(s->mutex);
+        // Browser creation is asynchronous. OnAfterCreated closes a browser
+        // whose view was released while CreateBrowser was still in flight.
+        if (!s->browser_creation_requested) s->closed = true;
+        closed = s->closed_condition.wait_for(lock, std::chrono::seconds(10),
+                                               [&] { return s->closed; });
+    }
+    // OnBeforeClose must run before CefShutdown. Do not tear CEF down under a
+    // still-live browser if it fails to close within the deadline.
+    if (!closed) fprintf(stderr, "CEF browser did not close within 10s; leaving CEF running\n");
+    browser = nullptr;
     if (widget != nullptr) {
         gtk_widget_destroy(widget);
         g_object_unref(widget);
     }
-    compose_cef_note_view_released();
+    if (closed) compose_cef_note_view_released();
 }
 
 void compose_cef_resize(

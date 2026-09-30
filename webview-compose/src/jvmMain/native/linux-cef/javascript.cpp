@@ -16,14 +16,15 @@ std::string base64Encode(const std::string &in) {
     std::string out;
     size_t i = 0;
     while (i < in.size()) {
-        const uint32_t a = in[i++];
-        const uint32_t b = i < in.size() ? in[i++] : 0;
-        const uint32_t c = i < in.size() ? in[i++] : 0;
+        const size_t remaining = in.size() - i;
+        const uint32_t a = static_cast<uint8_t>(in[i++]);
+        const uint32_t b = remaining > 1 ? static_cast<uint8_t>(in[i++]) : 0;
+        const uint32_t c = remaining > 2 ? static_cast<uint8_t>(in[i++]) : 0;
         const uint32_t triple = (a << 16) | (b << 8) | c;
         out.push_back(table[(triple >> 18) & 0x3F]);
         out.push_back(table[(triple >> 12) & 0x3F]);
-        out.push_back(i - 1 < in.size() ? table[(triple >> 6) & 0x3F] : '=');
-        out.push_back(i < in.size() ? table[triple & 0x3F] : '=');
+        out.push_back(remaining > 1 ? table[(triple >> 6) & 0x3F] : '=');
+        out.push_back(remaining > 2 ? table[triple & 0x3F] : '=');
     }
     return out;
 }

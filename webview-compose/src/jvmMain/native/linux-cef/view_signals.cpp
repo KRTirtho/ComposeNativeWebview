@@ -9,6 +9,26 @@
 
 namespace {
 
+class NavigationHeadersHandler final : public CefResourceRequestHandler {
+public:
+    explicit NavigationHeadersHandler(CefRequest::HeaderMap headers)
+        : headers_(std::move(headers)) {}
+
+    ReturnValue OnBeforeResourceLoad(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>,
+                                     CefRefPtr<CefRequest> request,
+                                     CefRefPtr<CefCallback>) override {
+        CefRequest::HeaderMap merged;
+        request->GetHeaderMap(merged);
+        merged.insert(headers_.begin(), headers_.end());
+        request->SetHeaderMap(merged);
+        return RV_CONTINUE;
+    }
+
+private:
+    CefRequest::HeaderMap headers_;
+    IMPLEMENT_REFCOUNTING(NavigationHeadersHandler);
+};
+
 class ComposeCefClient final : public CefClient,
                                public CefRenderHandler,
                                public CefLifeSpanHandler,
@@ -66,7 +86,8 @@ public:
         }
     }
 
-    void OnBeforeClose(CefRefPtr<CefBrowser>) override {
+    void OnBeforeClose(CefRefPtr<CefBrowser> browser) override {
+        message_router_->OnBeforeClose(browser);
         {
             std::lock_guard<std::mutex> lock(state_->mutex);
             state_->browser = nullptr;
@@ -136,27 +157,40 @@ public:
     void OnLoadEnd(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> frame, int) override {
         if (!frame->IsMain()) return;
         std::string init_script;
-        std::string bridge_script;
         {
             std::lock_guard<std::mutex> lock(state_->mutex);
             init_script = state_->init_script;
-            bridge_script = state_->js_bridge_script;
         }
         if (!init_script.empty()) frame->ExecuteJavaScript(init_script, frame->GetURL(), 0);
-        if (!bridge_script.empty()) frame->ExecuteJavaScript(bridge_script, frame->GetURL(), 0);
     }
 
     /* ── CefRequestHandler ────────────────────────────────────────────── */
     bool OnBeforeBrowse(
-        CefRefPtr<CefBrowser>,
+        CefRefPtr<CefBrowser> browser,
         CefRefPtr<CefFrame> frame,
         CefRefPtr<CefRequest> request,
         bool,
         bool) override {
         if (!frame->IsMain()) return false;
-        message_router_->OnBeforeBrowse(nullptr, frame);
+        message_router_->OnBeforeBrowse(browser, frame);
         return !compose_cef_call_on_navigate(
             state_->handle, request->GetURL().ToString());
+    }
+
+    CefRefPtr<CefResourceRequestHandler> GetResourceRequestHandler(
+        CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> frame,
+        CefRefPtr<CefRequest> request, bool is_navigation, bool,
+        const CefString &, bool &) override {
+        if (!is_navigation || frame == nullptr || !frame->IsMain()) return nullptr;
+        CefRequest::HeaderMap headers;
+        {
+            std::lock_guard<std::mutex> lock(state_->mutex);
+            auto it = state_->navigation_headers.find(request->GetURL().ToString());
+            if (it == state_->navigation_headers.end()) return nullptr;
+            headers = std::move(it->second);
+            state_->navigation_headers.erase(it);
+        }
+        return new NavigationHeadersHandler(std::move(headers));
     }
 
     bool OnProcessMessageReceived(
@@ -164,6 +198,10 @@ public:
         CefRefPtr<CefFrame> frame,
         CefProcessId source_process,
         CefRefPtr<CefProcessMessage> message) override {
+        if (source_process == PID_RENDERER && message->GetName() == "compose_cef_ipc") {
+            compose_cef_call_on_ipc(state_->handle, message->GetArgumentList()->GetString(0));
+            return true;
+        }
         return message_router_->OnProcessMessageReceived(
             browser, frame, source_process, message);
     }

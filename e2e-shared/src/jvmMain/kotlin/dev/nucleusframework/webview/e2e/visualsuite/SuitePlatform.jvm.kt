@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import dev.nucleusframework.webview.web.IWebView
 import dev.nucleusframework.webview.web.WebViewState
+import dev.nucleusframework.webview.web.linux.LinuxCefNativeWebView
 import dev.nucleusframework.webview.web.linux.LinuxWebKitNativeWebView
 import dev.nucleusframework.webview.web.macos.MacOsWebKitNativeWebView
 import dev.nucleusframework.webview.web.toAwtImage
@@ -29,7 +30,8 @@ actual fun isPlatformWebViewReady(state: WebViewState): Boolean {
     val nv = state.webView?.nativeWebView ?: return false
     return nv.isReady() &&
         (
-            nv is LinuxWebKitNativeWebView ||
+            nv is LinuxCefNativeWebView ||
+                nv is LinuxWebKitNativeWebView ||
                 nv is MacOsWebKitNativeWebView ||
                 nv is WindowsWebView2NativeWebView
             )
