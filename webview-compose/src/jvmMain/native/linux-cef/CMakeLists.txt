@@ -29,7 +29,19 @@ if(NOT JAVA_HOME)
     get_filename_component(JAVA_HOME "${JAVA_BIN_DIR}/.." REALPATH)
 endif()
 
-add_library(compose_cef_linux SHARED cef_bridge.cpp)
+add_library(compose_cef_linux SHARED
+    jni_bridge.cpp
+    cef_app.cpp
+    view_lifecycle.cpp
+    view_signals.cpp
+    view_render.cpp
+    view_input.cpp
+    context_menu.cpp
+    navigation.cpp
+    javascript.cpp
+    cookies.cpp
+    screenshot.cpp
+)
 SET_LIBRARY_TARGET_PROPERTIES(compose_cef_linux)
 set_target_properties(compose_cef_linux PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CEF_OUTPUT_DIR}"
