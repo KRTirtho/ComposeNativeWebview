@@ -34,6 +34,7 @@ plugins {
     id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
 }
 
+include(":demo-desktop")
 include(":e2e-desktop")
 include(":e2e-shared")
 include(":e2e-android")
