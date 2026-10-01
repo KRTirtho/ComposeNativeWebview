@@ -29,13 +29,13 @@ nucleus.application {
 }
 
 // The host-OS native WebView backend is gitignored — build it before run if missing.
-tasks.matching { it.name == "run" || it.name == "jvmRun" }.configureEach {
+tasks.matching { it.name == "run" || it.name == "jvmRun" || it.name == "hotRunJvm" }.configureEach {
     when {
         Os.isFamily(Os.FAMILY_WINDOWS) ->
             dependsOn(":webview-compose:buildNativeWindows")
         Os.isFamily(Os.FAMILY_MAC) ->
             dependsOn(":webview-compose:buildNativeMacos")
         Os.isFamily(Os.FAMILY_UNIX) ->
-            dependsOn(":webview-compose:buildNativeLinux")
+            dependsOn(":webview-compose:buildNativeLinux", ":webview-compose:buildNativeLinuxCef")
     }
 }

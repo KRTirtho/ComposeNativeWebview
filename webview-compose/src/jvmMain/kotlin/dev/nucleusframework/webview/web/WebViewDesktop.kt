@@ -1,14 +1,26 @@
 package dev.nucleusframework.webview.web
 
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.toComposeImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalFocusManager
 import dev.nucleusframework.core.runtime.Platform
 import dev.nucleusframework.webview.cookie.DesktopCookieManager
 import dev.nucleusframework.webview.jsbridge.WebViewJsBridge
@@ -30,9 +42,11 @@ import dev.nucleusframework.window.tao.NativeView
 import java.awt.image.BufferedImage
 import java.io.ByteArrayInputStream
 import javax.imageio.ImageIO
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import org.jetbrains.skia.Image as SkiaImage
 import kotlin.time.Duration.Companion.milliseconds
 
 actual class WebViewFactoryParam(
@@ -359,11 +373,35 @@ actual fun ActualWebView(
             }
         }
         linuxCefWebView != null && LocalWebViewFactory.current == null -> {
+            val focusRequester = remember(nativeWebView) { FocusRequester() }
+            val focusManager = LocalFocusManager.current
+            val viewIsFocused = remember(nativeWebView) { booleanArrayOf(false) }
+            DisposableEffect(nativeWebView, focusRequester, focusManager) {
+                linuxCefWebView.setOnPointerFocus {
+                    if (!viewIsFocused[0]) {
+                        focusManager.clearFocus(force = true)
+                        focusRequester.requestFocus()
+                    }
+                }
+                onDispose { linuxCefWebView.setOnPointerFocus(null) }
+            }
             NativeView(
                 factory = { linuxCefWebView.asPlatformView() },
-                modifier = modifier,
+                modifier = modifier
+                    .focusRequester(focusRequester)
+                    .onFocusChanged {
+                        val lostFocus = viewIsFocused[0] && !it.isFocused
+                        viewIsFocused[0] = it.isFocused
+                        if (lostFocus) linuxCefWebView.blur()
+                    }
+                    .focusable(),
                 update = { },
-                content = content,
+                content = {
+                    if (System.getProperty("compose.reload.isActive") == "true") {
+                        CefHotReloadPreview(linuxCefWebView)
+                    }
+                    content()
+                },
             )
             LaunchedEffect(nativeWebView) {
                 onCreated(nativeWebView)
@@ -410,6 +448,38 @@ actual fun ActualWebView(
             currentOnDispose(nativeWebView)
             nativeWebView.destroy()
         }
+    }
+}
+
+/**
+ * Hot Reload's EGL composition can occlude GTK's cairo surface even while CEF
+ * paints normally. Only in that development mode, show the same OSR frame in
+ * the Compose overlay; the GTK widget remains the input target underneath.
+ */
+@Composable
+private fun CefHotReloadPreview(view: LinuxCefNativeWebView) {
+    var frame by remember(view) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(view) {
+        while (view.isReady()) {
+            try {
+                view.captureScreenshotAsync()?.let { png ->
+                    frame = SkiaImage.makeFromEncoded(png).toComposeImageBitmap()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // A resize can momentarily leave CEF without a paint buffer.
+            }
+            delay(200.milliseconds)
+        }
+    }
+    frame?.let { image ->
+        Image(
+            bitmap = image,
+            contentDescription = null,
+            contentScale = ContentScale.FillBounds,
+            modifier = Modifier.fillMaxSize(),
+        )
     }
 }
 

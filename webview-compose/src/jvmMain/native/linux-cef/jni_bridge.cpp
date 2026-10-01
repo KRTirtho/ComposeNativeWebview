@@ -9,6 +9,7 @@ jmethodID g_on_ipc = nullptr;
 jmethodID g_on_js_result = nullptr;
 jmethodID g_on_cookies = nullptr;
 jmethodID g_on_screenshot = nullptr;
+jmethodID g_on_pointer_focus = nullptr;
 
 }  // namespace
 
@@ -50,6 +51,15 @@ void compose_cef_ensure_bridge_methods(JNIEnv *env) {
         g_bridge_class, "nativeOnCookiesResult", "(JLjava/lang/String;)V");
     g_on_screenshot = env->GetStaticMethodID(
         g_bridge_class, "nativeOnScreenshotResult", "(J[B)V");
+    g_on_pointer_focus = env->GetStaticMethodID(
+        g_bridge_class, "nativeOnPointerFocus", "(J)V");
+}
+
+void compose_cef_call_on_pointer_focus(jlong handle) {
+    JNIEnv *env = compose_cef_get_env();
+    if (env == nullptr || g_bridge_class == nullptr || g_on_pointer_focus == nullptr) return;
+    env->CallStaticVoidMethod(g_bridge_class, g_on_pointer_focus, handle);
+    if (env->ExceptionCheck()) env->ExceptionClear();
 }
 
 bool compose_cef_call_on_navigate(jlong handle, const std::string &url) {

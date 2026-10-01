@@ -1,5 +1,6 @@
 #include "compose_cef_internal.h"
 
+#include "include/cef_image.h"
 #include "include/wrapper/cef_helpers.h"
 
 /* Native GTK context menu built from CEF's menu model, filtered to the
@@ -8,6 +9,10 @@
  * that follows the press is swallowed in view_input.cpp so the menu survives. */
 
 namespace {
+
+constexpr int kCopyLinkAddress = MENU_ID_USER_FIRST;
+constexpr int kCopyImageAddress = MENU_ID_USER_FIRST + 1;
+constexpr int kCopyImage = MENU_ID_USER_FIRST + 2;
 
 struct GtkMenuEntry {
     cef_menu_item_type_t type = MENUITEMTYPE_NONE;
@@ -43,6 +48,7 @@ struct GtkContextMenuAction {
 void completeContextMenu(const std::shared_ptr<GtkContextMenuState> &menu, int command_id) {
     bool expected = false;
     if (!menu->completed.compare_exchange_strong(expected, true)) return;
+    GtkWidget *widget = menu->menu_widget;
     if (menu->owner != nullptr) {
         std::lock_guard<std::mutex> lock(menu->owner->mutex);
         if (menu->owner->active_menu_widget == menu->menu_widget) {
@@ -54,7 +60,58 @@ void completeContextMenu(const std::shared_ptr<GtkContextMenuState> &menu, int c
         if (command_id >= 0) callback->Continue(command_id, EVENTFLAG_NONE);
         else callback->Cancel();
     });
+    if (widget != nullptr) {
+        // GtkMenu retains an input grab until it is destroyed. Defer that
+        // destruction until the current activate/deactivate signal returns.
+        g_object_ref(widget);
+        g_idle_add_full(G_PRIORITY_DEFAULT, [](gpointer data) -> gboolean {
+            auto *menu_widget = GTK_WIDGET(data);
+            gtk_widget_destroy(menu_widget);
+            g_object_unref(menu_widget);
+            return G_SOURCE_REMOVE;
+        }, widget, nullptr);
+    }
 }
+
+void copyTextToClipboard(const std::string &text) {
+    auto *payload = new std::string(text);
+    g_idle_add_full(G_PRIORITY_DEFAULT, [](gpointer data) -> gboolean {
+        const auto &value = *static_cast<std::string *>(data);
+        gtk_clipboard_set_text(gtk_clipboard_get(GDK_SELECTION_CLIPBOARD),
+                               value.c_str(), static_cast<gint>(value.size()));
+        return G_SOURCE_REMOVE;
+    }, payload, [](gpointer data) { delete static_cast<std::string *>(data); });
+}
+
+class CopyImageCallback final : public CefDownloadImageCallback {
+public:
+    void OnDownloadImageFinished(const CefString &, int status,
+                                 CefRefPtr<CefImage> image) override {
+        if ((status != 0 && (status < 200 || status >= 300)) ||
+            image == nullptr || image->IsEmpty()) return;
+        int width = 0, height = 0;
+        CefRefPtr<CefBinaryValue> png = image->GetAsPNG(1.f, true, width, height);
+        if (png == nullptr || png->GetSize() == 0) return;
+        auto *bytes = new std::vector<uint8_t>(png->GetSize());
+        png->GetData(bytes->data(), bytes->size(), 0);
+        g_idle_add_full(G_PRIORITY_DEFAULT, [](gpointer data) -> gboolean {
+            const auto &png_data = *static_cast<std::vector<uint8_t> *>(data);
+            GdkPixbufLoader *loader = gdk_pixbuf_loader_new();
+            if (gdk_pixbuf_loader_write(loader, png_data.data(), png_data.size(), nullptr) &&
+                gdk_pixbuf_loader_close(loader, nullptr)) {
+                GdkPixbuf *pixbuf = gdk_pixbuf_loader_get_pixbuf(loader);
+                if (pixbuf != nullptr) {
+                    gtk_clipboard_set_image(gtk_clipboard_get(GDK_SELECTION_CLIPBOARD), pixbuf);
+                }
+            }
+            g_object_unref(loader);
+            return G_SOURCE_REMOVE;
+        }, bytes, [](gpointer data) { delete static_cast<std::vector<uint8_t> *>(data); });
+    }
+
+private:
+    IMPLEMENT_REFCOUNTING(CopyImageCallback);
+};
 
 std::string gtkMenuLabel(const std::string &cef_label) {
     std::string label;
@@ -91,6 +148,20 @@ bool isAllowedContextMenuCommand(int command_id) {
         case IDC_CONTENT_CONTEXT_COPYLINKLOCATION:
         case IDC_CONTENT_CONTEXT_COPYIMAGELOCATION:
         case IDC_CONTENT_CONTEXT_COPYIMAGE:
+        case MENU_ID_UNDO:
+        case MENU_ID_REDO:
+        case MENU_ID_CUT:
+        case MENU_ID_COPY:
+        case MENU_ID_PASTE:
+        case MENU_ID_PASTE_MATCH_STYLE:
+        case MENU_ID_DELETE:
+        case MENU_ID_SELECT_ALL:
+        case MENU_ID_BACK:
+        case MENU_ID_FORWARD:
+        case MENU_ID_RELOAD:
+        case kCopyLinkAddress:
+        case kCopyImageAddress:
+        case kCopyImage:
             return true;
         default:
             return false;
@@ -175,6 +246,10 @@ gboolean showGtkContextMenu(gpointer data) {
     auto *menu_ref = static_cast<std::shared_ptr<GtkContextMenuState> *>(data);
     const auto &state = *menu_ref;
     if (state->completed) return G_SOURCE_REMOVE;
+    if (g_getenv("COMPOSE_CEF_DEBUG_MENU")) {
+        g_printerr("CEF context menu: %zu items, widget=%p, at %d,%d\n",
+                   state->entries.size(), state->parent_widget, state->x, state->y);
+    }
     if (state->entries.empty() || state->parent_widget == nullptr ||
         !gtk_widget_get_realized(state->parent_widget)) {
         completeContextMenu(state, -1);
@@ -205,6 +280,7 @@ gboolean showGtkContextMenu(gpointer data) {
         G_CALLBACK(+[](GtkMenuShell *shell, gpointer context) {
             auto *menu_state = static_cast<std::shared_ptr<GtkContextMenuState> *>(context);
             (void)shell;
+            if (g_getenv("COMPOSE_CEF_DEBUG_MENU")) g_printerr("CEF context menu deactivated\n");
             completeContextMenu(*menu_state, -1);
         }),
         deactivate_payload,
@@ -214,9 +290,10 @@ gboolean showGtkContextMenu(gpointer data) {
         G_CONNECT_DEFAULT);
     gtk_menu_attach_to_widget(GTK_MENU(gtk_menu), state->parent_widget, nullptr);
     gtk_widget_show_all(gtk_menu);
-    GtkAllocation allocation;
-    gtk_widget_get_allocation(state->parent_widget, &allocation);
-    GdkRectangle anchor{allocation.x + state->x, allocation.y + state->y, 1, 1};
+    // CefContextMenuParams coordinates are local to the view; the widget's
+    // GdkWindow is also local to the view. Adding its parent allocation here
+    // moves the menu away from the click (and often off-screen).
+    GdkRectangle anchor{state->x, state->y, 1, 1};
     GdkWindow *parent_window = gtk_widget_get_window(state->parent_widget);
     if (parent_window == nullptr) {
         completeContextMenu(state, -1);
@@ -237,11 +314,107 @@ gboolean showGtkContextMenu(gpointer data) {
 
 }  // namespace
 
+void compose_cef_prepare_context_menu(
+    CefRefPtr<CefContextMenuParams> params,
+    CefRefPtr<CefMenuModel> model) {
+    if (g_getenv("COMPOSE_CEF_DEBUG_MENU")) {
+        g_printerr("CEF OnBeforeContextMenu: %zu items, editable=%d, link=%d, media=%d\n",
+                   model->GetCount(), params->IsEditable(),
+                   !params->GetUnfilteredLinkUrl().empty(), params->GetMediaType());
+    }
+    if (!copyMenuModel(model).empty()) return;
+
+    // The Chrome runtime can return an empty/default-only model for OSR.
+    // Supply Chromium command IDs so the normal CEF callback still performs
+    // editing, link and image actions instead of displaying an empty menu.
+    model->Clear();
+    const auto flags = params->GetEditStateFlags();
+    if (params->IsEditable()) {
+        const auto addEdit = [model, flags](int id, const char *label, int flag) {
+            model->AddItem(id, label);
+            model->SetEnabled(id, (flags & flag) != 0);
+        };
+        addEdit(MENU_ID_UNDO, "Undo", CM_EDITFLAG_CAN_UNDO);
+        addEdit(MENU_ID_REDO, "Redo", CM_EDITFLAG_CAN_REDO);
+        model->AddSeparator();
+        addEdit(MENU_ID_CUT, "Cut", CM_EDITFLAG_CAN_CUT);
+        addEdit(MENU_ID_COPY, "Copy", CM_EDITFLAG_CAN_COPY);
+        addEdit(MENU_ID_PASTE, "Paste", CM_EDITFLAG_CAN_PASTE);
+        addEdit(MENU_ID_DELETE, "Delete", CM_EDITFLAG_CAN_DELETE);
+        model->AddSeparator();
+        addEdit(MENU_ID_SELECT_ALL, "Select All", CM_EDITFLAG_CAN_SELECT_ALL);
+    } else if ((params->GetTypeFlags() & CM_TYPEFLAG_SELECTION) != 0) {
+        model->AddItem(MENU_ID_COPY, "Copy");
+    }
+    if (!params->GetUnfilteredLinkUrl().empty()) {
+        if (model->GetCount() != 0) model->AddSeparator();
+        model->AddItem(kCopyLinkAddress, "Copy link address");
+    }
+    if (params->GetMediaType() == CM_MEDIATYPE_IMAGE) {
+        if (model->GetCount() != 0) model->AddSeparator();
+        model->AddItem(kCopyImageAddress, "Copy image address");
+        model->AddItem(kCopyImage, "Copy image");
+        model->SetEnabled(kCopyImage, params->HasImageContents());
+    }
+    if (model->GetCount() == 0) {
+        model->AddItem(MENU_ID_BACK, "Back");
+        model->AddItem(MENU_ID_FORWARD, "Forward");
+        model->AddItem(MENU_ID_RELOAD, "Reload");
+    }
+}
+
+bool compose_cef_handle_context_menu_command(
+    CefRefPtr<CefBrowser> browser,
+    CefRefPtr<CefFrame> frame,
+    CefRefPtr<CefContextMenuParams> params,
+    int command_id) {
+    if (g_getenv("COMPOSE_CEF_DEBUG_MENU")) {
+        g_printerr("CEF context menu command: %d\n", command_id);
+    }
+    if (browser == nullptr || params == nullptr) return false;
+    if (frame == nullptr) frame = browser->GetMainFrame();
+    if (frame == nullptr) return false;
+    switch (command_id) {
+        case MENU_ID_UNDO: case IDC_CONTENT_CONTEXT_UNDO: frame->Undo(); return true;
+        case MENU_ID_REDO: case IDC_CONTENT_CONTEXT_REDO: frame->Redo(); return true;
+        case MENU_ID_CUT: case IDC_CONTENT_CONTEXT_CUT: frame->Cut(); return true;
+        case MENU_ID_COPY: case IDC_CONTENT_CONTEXT_COPY: frame->Copy(); return true;
+        case MENU_ID_PASTE: case IDC_CONTENT_CONTEXT_PASTE: frame->Paste(); return true;
+        case MENU_ID_PASTE_MATCH_STYLE:
+        case IDC_CONTENT_CONTEXT_PASTE_AND_MATCH_STYLE: frame->PasteAndMatchStyle(); return true;
+        case MENU_ID_DELETE: case IDC_CONTENT_CONTEXT_DELETE: frame->Delete(); return true;
+        case MENU_ID_SELECT_ALL: case IDC_CONTENT_CONTEXT_SELECTALL: frame->SelectAll(); return true;
+        case MENU_ID_BACK: case IDC_BACK: browser->GoBack(); return true;
+        case MENU_ID_FORWARD: case IDC_FORWARD: browser->GoForward(); return true;
+        case MENU_ID_RELOAD: case IDC_RELOAD: browser->Reload(); return true;
+        case IDC_CONTENT_CONTEXT_OPENLINKNEWTAB:
+            browser->GetMainFrame()->LoadURL(params->GetLinkUrl());
+            return true;
+        case kCopyLinkAddress:
+        case IDC_CONTENT_CONTEXT_COPYLINKLOCATION:
+            copyTextToClipboard(params->GetUnfilteredLinkUrl().ToString());
+            return true;
+        case kCopyImageAddress:
+        case IDC_CONTENT_CONTEXT_COPYIMAGELOCATION:
+            copyTextToClipboard(params->GetSourceUrl().ToString());
+            return true;
+        case kCopyImage:
+        case IDC_CONTENT_CONTEXT_COPYIMAGE:
+            browser->GetHost()->DownloadImage(params->GetSourceUrl(), false, 0, false,
+                                               new CopyImageCallback());
+            return true;
+        default: return false;
+    }
+}
+
 bool compose_cef_run_context_menu(
     const std::shared_ptr<ComposeCefViewState> &state,
     CefRefPtr<CefMenuModel> model,
     CefRefPtr<CefRunContextMenuCallback> callback,
     CefRefPtr<CefContextMenuParams> params) {
+    if (g_getenv("COMPOSE_CEF_DEBUG_MENU")) {
+        g_printerr("CEF RunContextMenu: %zu model items\n", model->GetCount());
+    }
     GtkWidget *widget = nullptr;
     GdkEvent *trigger_event = nullptr;
     {

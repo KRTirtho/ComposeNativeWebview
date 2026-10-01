@@ -109,6 +109,12 @@ internal object CefLinuxBridge {
         ConcurrentHashMap<Long, ConcurrentLinkedQueue<CompletableDeferred<String>>>()
     private val screenshotDeferreds =
         ConcurrentHashMap<Long, ConcurrentLinkedQueue<CompletableDeferred<ByteArray?>>>()
+    private val pointerFocusHandlers = ConcurrentHashMap<Long, () -> Unit>()
+
+    fun setPointerFocusHandler(handle: Long, handler: (() -> Unit)?) {
+        if (handler == null) pointerFocusHandlers.remove(handle)
+        else pointerFocusHandlers[handle] = handler
+    }
 
     fun addNavigateListener(handle: Long, listener: (String) -> Boolean) {
         navigateHandlers.getOrPut(handle) { mutableListOf() }.add(listener)
@@ -141,6 +147,7 @@ internal object CefLinuxBridge {
     }
 
     fun clearHandle(handle: Long) {
+        pointerFocusHandlers.remove(handle)
         navigateHandlers.remove(handle)
         ipcQueues.remove(handle)
         jsCallbacks.remove(handle)?.forEach { it.invoke("") }
@@ -175,6 +182,11 @@ internal object CefLinuxBridge {
     @JvmStatic
     fun nativeOnScreenshotResult(handle: Long, bytes: ByteArray?) {
         screenshotDeferreds[handle]?.poll()?.complete(bytes)
+    }
+
+    @JvmStatic
+    fun nativeOnPointerFocus(handle: Long) {
+        pointerFocusHandlers[handle]?.invoke()
     }
 
     // ── Native methods ────────────────────────────────────────────────
@@ -295,4 +307,7 @@ internal object CefLinuxBridge {
 
     @JvmStatic
     external fun nativeResize(handle: Long, widthPx: Int, heightPx: Int)
+
+    @JvmStatic
+    external fun nativeBlur(handle: Long)
 }

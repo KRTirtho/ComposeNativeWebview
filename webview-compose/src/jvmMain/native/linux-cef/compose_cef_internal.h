@@ -61,6 +61,7 @@ void compose_cef_call_on_ipc(jlong handle, const std::string &utf8);
 void compose_cef_call_on_js_result(jlong handle, const std::string &utf8);
 void compose_cef_call_on_cookies(jlong handle, const std::string &json);
 void compose_cef_call_on_screenshot(jlong handle, const std::vector<uint8_t> &png);
+void compose_cef_call_on_pointer_focus(jlong handle);
 
 /* view_lifecycle.cpp */
 std::string compose_cef_jstring_to_utf8(JNIEnv *env, jstring s);
@@ -107,6 +108,14 @@ void compose_cef_queue_draw(const std::shared_ptr<ComposeCefViewState> &state);
 void compose_cef_connect_input(GtkWidget *widget, const std::shared_ptr<ComposeCefViewState> &state);
 
 /* context_menu.cpp — native GTK menu built from CEF's menu model. */
+void compose_cef_prepare_context_menu(
+    CefRefPtr<CefContextMenuParams> params,
+    CefRefPtr<CefMenuModel> model);
+bool compose_cef_handle_context_menu_command(
+    CefRefPtr<CefBrowser> browser,
+    CefRefPtr<CefFrame> frame,
+    CefRefPtr<CefContextMenuParams> params,
+    int command_id);
 bool compose_cef_run_context_menu(
     const std::shared_ptr<ComposeCefViewState> &state,
     CefRefPtr<CefMenuModel> model,

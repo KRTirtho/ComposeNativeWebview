@@ -140,6 +140,9 @@ gboolean onButton(GtkWidget *widget, GdkEventButton *event, gpointer data) {
         if (state->active_menu_widget != nullptr) return TRUE;
     }
     if (event->type == GDK_BUTTON_PRESS && event->button == 3) {
+        if (g_getenv("COMPOSE_CEF_DEBUG_MENU")) {
+            g_printerr("CEF right-button press at %.0f,%.0f\n", event->x, event->y);
+        }
         GdkEvent *copied = gdk_event_copy(reinterpret_cast<GdkEvent *>(event));
         attachGtkPointerDevice(copied, event->window);
         std::lock_guard<std::mutex> lock(state->mutex);
@@ -149,8 +152,9 @@ gboolean onButton(GtkWidget *widget, GdkEventButton *event, gpointer data) {
     CefRefPtr<CefBrowser> browser = browserOf(state);
     if (browser == nullptr) return FALSE;
 
-    if (event->type == GDK_BUTTON_PRESS && event->button != 3) {
+    if (event->type == GDK_BUTTON_PRESS) {
         gtk_widget_grab_focus(widget);
+        compose_cef_call_on_pointer_focus(state->handle);
     }
     CefMouseEvent mouse;
     mouse.x = static_cast<int>(event->x);
@@ -169,7 +173,7 @@ gboolean onButton(GtkWidget *widget, GdkEventButton *event, gpointer data) {
     }
     const bool mouse_up = event->type == GDK_BUTTON_RELEASE;
     if (!mouse_up) mouse.modifiers |= button_flag;
-    const bool grab_focus = event->type == GDK_BUTTON_PRESS && event->button != 3;
+    const bool grab_focus = event->type == GDK_BUTTON_PRESS;
     compose_cef_post_to_ui([browser, mouse, button, mouse_up, grab_focus] {
         if (grab_focus) browser->GetHost()->SetFocus(true);
         browser->GetHost()->SendMouseClickEvent(mouse, button, mouse_up, 1);
@@ -202,7 +206,7 @@ gboolean onScroll(GtkWidget *, GdkEventScroll *event, gpointer data) {
         browser->GetHost()->SendMouseWheelEvent(
             mouse,
             static_cast<int>(delta_x * 120.0),
-            static_cast<int>(delta_y * 120.0));
+            static_cast<int>(-delta_y * 120.0));
     });
     return TRUE;
 }
@@ -211,6 +215,45 @@ gboolean onKey(GtkWidget *, GdkEventKey *event, gpointer data) {
     auto state = *static_cast<std::shared_ptr<ComposeCefViewState> *>(data);
     CefRefPtr<CefBrowser> browser = browserOf(state);
     if (browser == nullptr) return FALSE;
+    const bool control = (event->state & GDK_CONTROL_MASK) != 0;
+    const bool other_modifier = (event->state & (GDK_MOD1_MASK | GDK_META_MASK)) != 0;
+    if (control && !other_modifier) {
+        const guint keyval = gdk_keyval_to_lower(event->keyval);
+        const bool shift = (event->state & GDK_SHIFT_MASK) != 0;
+        if (keyval == GDK_KEY_c || keyval == GDK_KEY_x || keyval == GDK_KEY_v ||
+            keyval == GDK_KEY_a || keyval == GDK_KEY_z || keyval == GDK_KEY_y) {
+            if (event->type == GDK_KEY_PRESS) {
+                if (g_getenv("COMPOSE_CEF_DEBUG_INPUT")) {
+                    g_printerr("CEF edit shortcut: %c (shift=%d)\n",
+                               static_cast<char>(keyval), shift);
+                }
+                // CEF's windowless Linux browser does not execute the default
+                // editing accelerators for synthetic GDK key events. Use the
+                // focused frame's edit commands instead (and don't forward
+                // the keystroke as well, which would paste/cut twice).
+                compose_cef_post_to_ui([browser, keyval, shift] {
+                    CefRefPtr<CefFrame> frame = browser->GetFocusedFrame();
+                    if (frame == nullptr) frame = browser->GetMainFrame();
+                    if (frame == nullptr) return;
+                    switch (keyval) {
+                        case GDK_KEY_c: frame->Copy(); break;
+                        case GDK_KEY_x: frame->Cut(); break;
+                        case GDK_KEY_v:
+                            if (shift) frame->PasteAndMatchStyle();
+                            else frame->Paste();
+                            break;
+                        case GDK_KEY_a: frame->SelectAll(); break;
+                        case GDK_KEY_z:
+                            if (shift) frame->Redo();
+                            else frame->Undo();
+                            break;
+                        case GDK_KEY_y: frame->Redo(); break;
+                    }
+                });
+            }
+            return TRUE;
+        }
+    }
     CefKeyEvent key;
     key.type = event->type == GDK_KEY_RELEASE ? KEYEVENT_KEYUP : KEYEVENT_RAWKEYDOWN;
     key.windows_key_code = cefWindowsKeyCodeFromGdk(event->keyval);

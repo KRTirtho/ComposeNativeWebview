@@ -77,6 +77,14 @@ class LinuxCefNativeWebView(
     }
 
     /** Creates the [NucleusPlatformView] used by NativeView embedding. */
+    internal fun setOnPointerFocus(handler: (() -> Unit)?) {
+        CefLinuxBridge.setPointerFocusHandler(handle, handler)
+    }
+
+    internal fun blur() {
+        if (isReady()) CefLinuxBridge.nativeBlur(handle)
+    }
+
     fun asPlatformView(): NucleusPlatformView.GtkWidget =
         object : NucleusPlatformView.GtkWidget {
             override val gtkWidgetHandle: Long

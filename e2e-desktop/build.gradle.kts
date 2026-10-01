@@ -60,7 +60,7 @@ nucleus.application {
 
 // Visual e2e needs the host-OS native WebView backend on the runtime classpath.
 // Natives are gitignored — build them before run if missing.
-tasks.matching { it.name == "run" || it.name == "jvmRun" }.configureEach {
+tasks.matching { it.name == "run" || it.name == "jvmRun" || it.name == "hotRunJvm" }.configureEach {
     when {
         Os.isFamily(Os.FAMILY_WINDOWS) ->
             dependsOn(":webview-compose:buildNativeWindows")

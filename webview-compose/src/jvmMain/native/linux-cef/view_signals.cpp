@@ -86,6 +86,25 @@ public:
         }
     }
 
+    bool OnBeforePopup(
+        CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>, int,
+        const CefString &target_url, const CefString &,
+        CefLifeSpanHandler::WindowOpenDisposition,
+        bool, const CefPopupFeatures &, CefWindowInfo &,
+        CefRefPtr<CefClient> &, CefBrowserSettings &,
+        CefRefPtr<CefDictionaryValue> &, bool *) override {
+        // A popup needs its own OSR surface and GTK host. Letting CEF create
+        // one without either produces unowned Chrome windows (often black).
+        // Until popup hosting exists, keep the destination in this view.
+        const std::string url = target_url.ToString();
+        if (!url.empty() && url != "about:blank") {
+            compose_cef_post_to_ui([browser, url] {
+                browser->GetMainFrame()->LoadURL(CefString(url));
+            });
+        }
+        return true;
+    }
+
     void OnBeforeClose(CefRefPtr<CefBrowser> browser) override {
         message_router_->OnBeforeClose(browser);
         {
@@ -97,6 +116,13 @@ public:
     }
 
     /* ── CefContextMenuHandler ────────────────────────────────────────── */
+    void OnBeforeContextMenu(
+        CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>,
+        CefRefPtr<CefContextMenuParams> params,
+        CefRefPtr<CefMenuModel> model) override {
+        compose_cef_prepare_context_menu(params, model);
+    }
+
     bool RunContextMenu(
         CefRefPtr<CefBrowser>,
         CefRefPtr<CefFrame>,
@@ -104,6 +130,14 @@ public:
         CefRefPtr<CefMenuModel> model,
         CefRefPtr<CefRunContextMenuCallback> callback) override {
         return compose_cef_run_context_menu(state_, model, callback, params);
+    }
+
+    bool OnContextMenuCommand(
+        CefRefPtr<CefBrowser> browser,
+        CefRefPtr<CefFrame> frame,
+        CefRefPtr<CefContextMenuParams> params,
+        int command_id, EventFlags) override {
+        return compose_cef_handle_context_menu_command(browser, frame, params, command_id);
     }
 
     /* ── CefDisplayHandler ────────────────────────────────────────────── */
