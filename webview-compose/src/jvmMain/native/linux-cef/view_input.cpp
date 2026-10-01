@@ -20,19 +20,6 @@ guint cefModifiersFromGdk(guint state) {
     return modifiers;
 }
 
-void attachGtkPointerDevice(GdkEvent *event, GdkWindow *window) {
-    if (event == nullptr || window == nullptr) return;
-    GdkDevice *device = gdk_event_get_device(event);
-    if (device == nullptr) {
-        GdkSeat *seat = gdk_display_get_default_seat(gdk_window_get_display(window));
-        if (seat != nullptr) device = gdk_seat_get_pointer(seat);
-    }
-    if (device != nullptr) {
-        gdk_event_set_device(event, device);
-        gdk_event_set_source_device(event, device);
-    }
-}
-
 int cefWindowsKeyCodeFromGdk(guint keyval) {
     switch (keyval) {
         case GDK_KEY_BackSpace: return 0x08;
@@ -133,7 +120,7 @@ gboolean onMotion(GtkWidget *, GdkEventMotion *event, gpointer data) {
 gboolean onButton(GtkWidget *widget, GdkEventButton *event, gpointer data) {
     auto state = *static_cast<std::shared_ptr<ComposeCefViewState> *>(data);
     if (event->type == GDK_BUTTON_RELEASE && event->button == 3) {
-        // The GTK popup may grab the right-button release. Defer it until the
+        // The GTK popover may grab the right-button release. Defer it until the
         // menu closes, but never leave CEF with an unmatched button-down.
         std::lock_guard<std::mutex> lock(state->mutex);
         if (state->active_menu_widget != nullptr) return TRUE;
@@ -142,16 +129,43 @@ gboolean onButton(GtkWidget *widget, GdkEventButton *event, gpointer data) {
         if (g_getenv("COMPOSE_CEF_DEBUG_MENU")) {
             g_printerr("CEF right-button press at %.0f,%.0f\n", event->x, event->y);
         }
-        GdkEvent *copied = gdk_event_copy(reinterpret_cast<GdkEvent *>(event));
-        attachGtkPointerDevice(copied, event->window);
-        std::lock_guard<std::mutex> lock(state->mutex);
-        if (state->last_context_event != nullptr) gdk_event_free(state->last_context_event);
-        state->last_context_event = copied;
+        if (state->context_input_widget != nullptr) {
+            if (g_signal_handler_is_connected(state->context_input_widget, state->context_input_handler)) {
+                g_signal_handler_disconnect(state->context_input_widget, state->context_input_handler);
+            }
+            g_object_unref(state->context_input_widget);
+        }
+        if (state->context_press_event != nullptr) gdk_event_free(state->context_press_event);
+        // gtk_widget_event() may have received a retargeted copy from Nucleus.
+        // gtk_get_current_event() retains the real EventBox press on the GTK
+        // event stack, whose release also needs to reach Compose.
+        state->context_press_event = gtk_get_current_event();
+        if (state->context_press_event == nullptr ||
+            state->context_press_event->type != GDK_BUTTON_PRESS) {
+            if (state->context_press_event != nullptr) gdk_event_free(state->context_press_event);
+            state->context_press_event = gdk_event_copy(reinterpret_cast<GdkEvent *>(event));
+        }
+        GtkWidget *source = gtk_get_event_widget(state->context_press_event);
+        state->context_input_widget = source != nullptr ? GTK_WIDGET(g_object_ref(source)) : nullptr;
+        state->context_input_handler = 0;
+        state->context_release_pending = true;
+        if (source != nullptr) {
+            // Observe the generic signal, before the EventBox's specific
+            // button-release handler consumes it. Avoid duplicate releases
+            // when the physical release arrived before the popover opened.
+            state->context_input_handler = g_signal_connect(source, "event",
+                G_CALLBACK(+[](GtkWidget *, GdkEvent *event, gpointer data) -> gboolean {
+                    if (event->type == GDK_BUTTON_RELEASE && event->button.button == 3) {
+                        static_cast<ComposeCefViewState *>(data)->context_release_pending = false;
+                    }
+                    return FALSE;
+                }), state.get());
+        }
     }
     CefRefPtr<CefBrowser> browser = browserOf(state);
     if (browser == nullptr) return FALSE;
 
-    if (event->type == GDK_BUTTON_PRESS && event->button != 3) {
+    if (event->type == GDK_BUTTON_PRESS) {
         gtk_widget_grab_focus(widget);
         compose_cef_call_on_pointer_focus(state->handle);
     }
@@ -185,7 +199,7 @@ gboolean onButton(GtkWidget *widget, GdkEventButton *event, gpointer data) {
             state->right_button_pending.store(true);
         }
     }
-    const bool grab_focus = event->type == GDK_BUTTON_PRESS && event->button != 3;
+    const bool grab_focus = event->type == GDK_BUTTON_PRESS;
     compose_cef_post_to_ui([browser, mouse, button, mouse_up, grab_focus] {
         if (grab_focus) browser->GetHost()->SetFocus(true);
         browser->GetHost()->SendMouseClickEvent(mouse, button, mouse_up, 1);
@@ -292,6 +306,11 @@ gboolean onKey(GtkWidget *, GdkEventKey *event, gpointer data) {
 
 gboolean onFocusIn(GtkWidget *, GdkEventFocus *, gpointer data) {
     auto state = *static_cast<std::shared_ptr<ComposeCefViewState> *>(data);
+    if (g_getenv("COMPOSE_CEF_DEBUG_INPUT")) g_printerr("CEF GTK view focus in\n");
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        if (state->active_menu_widget != nullptr) return FALSE;
+    }
     CefRefPtr<CefBrowser> browser = browserOf(state);
     if (browser.get() != nullptr) {
         compose_cef_post_to_ui([browser] { browser->GetHost()->SetFocus(true); });
@@ -301,6 +320,13 @@ gboolean onFocusIn(GtkWidget *, GdkEventFocus *, gpointer data) {
 
 gboolean onFocusOut(GtkWidget *, GdkEventFocus *, gpointer data) {
     auto state = *static_cast<std::shared_ptr<ComposeCefViewState> *>(data);
+    if (g_getenv("COMPOSE_CEF_DEBUG_INPUT")) g_printerr("CEF GTK view focus out\n");
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        // Modal popover focus is temporary. Blurring CEF here cancels its
+        // pending context menu before the user can choose an action.
+        if (state->active_menu_widget != nullptr) return FALSE;
+    }
     CefRefPtr<CefBrowser> browser = browserOf(state);
     if (browser.get() != nullptr) {
         compose_cef_post_to_ui([browser] { browser->GetHost()->SetFocus(false); });
@@ -343,7 +369,13 @@ void onOutsidePress(GtkGestureMultiPress *gesture, gint, gdouble x, gdouble y,
     // Nucleus paints Compose over the same GTK window; moving Compose focus
     // does not always change GTK's focused widget. Capture the actual GTK
     // press before a child consumes it and relinquish CEF's keyboard focus.
-    if (g_getenv("COMPOSE_CEF_DEBUG_INPUT")) g_printerr("CEF outside press: blur\n");
+    if (g_getenv("COMPOSE_CEF_DEBUG_INPUT")) {
+        GdkEvent *event = gtk_get_current_event();
+        GtkWidget *target = event != nullptr ? gtk_get_event_widget(event) : nullptr;
+        g_printerr("CEF outside press: blur (focus=%d target=%s)\n",
+                   gtk_widget_has_focus(widget), target != nullptr ? G_OBJECT_TYPE_NAME(target) : "none");
+        if (event != nullptr) gdk_event_free(event);
+    }
     if (gtk_widget_has_focus(widget)) gtk_window_set_focus(GTK_WINDOW(top), nullptr);
     CefRefPtr<CefBrowser> browser;
     {
@@ -364,6 +396,22 @@ void onHierarchyChanged(GtkWidget *widget, GtkWidget *, gpointer data) {
     }
     GtkWidget *top = gtk_widget_get_toplevel(widget);
     if (state->closing || !GTK_IS_WINDOW(top)) return;
+    if (g_object_get_data(G_OBJECT(top), "compose-cef-host-event-filter") == nullptr) {
+        // GTK registers popover subsurface windows on the host GtkWindow.
+        // Its class handler ignores their configure events, but Tao's user
+        // handlers run first and otherwise mistake popover size/focus for
+        // the app window's. Filter before the specific event signals fire.
+        // The connection belongs to the host window, not this view, so it
+        // also covers late events after a popover/view has been destroyed.
+        g_signal_connect(top, "event", G_CALLBACK(+[](GtkWidget *host, GdkEvent *event, gpointer) -> gboolean {
+            if ((event->type == GDK_CONFIGURE || event->type == GDK_FOCUS_CHANGE) &&
+                event->any.window != gtk_widget_get_window(host)) {
+                return TRUE;
+            }
+            return FALSE;
+        }), nullptr);
+        g_object_set_data(G_OBJECT(top), "compose-cef-host-event-filter", GINT_TO_POINTER(1));
+    }
     if (g_getenv("COMPOSE_CEF_DEBUG_INPUT")) g_printerr("CEF GTK focus capture attached\n");
     GtkGesture *gesture = gtk_gesture_multi_press_new(top);
     gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(gesture), 0);
@@ -374,7 +422,37 @@ void onHierarchyChanged(GtkWidget *widget, GtkWidget *, gpointer data) {
 
 }  // namespace
 
+void compose_cef_finish_context_input(const std::shared_ptr<ComposeCefViewState> &state) {
+    if (!state->context_release_pending || state->context_press_event == nullptr) return;
+    state->context_release_pending = false;
+    GdkEvent *release = gdk_event_copy(state->context_press_event);
+    release->type = GDK_BUTTON_RELEASE;
+    release->button.state &= ~GDK_BUTTON3_MASK;
+    release->button.send_event = TRUE;
+    if (g_getenv("COMPOSE_CEF_DEBUG_MENU")) {
+        g_printerr("CEF menu: balancing original GTK/Compose right-button release\n");
+    }
+    // Use normal GTK dispatch after removing the modal grab. This balances
+    // both GTK capture gestures and Nucleus's Compose pointer capture, which
+    // would otherwise keep forwarding outside clicks to the WebView.
+    gtk_main_do_event(release);
+    gdk_event_free(release);
+}
+
 void compose_cef_disconnect_input(const std::shared_ptr<ComposeCefViewState> &state) {
+    compose_cef_finish_context_input(state);
+    if (state->context_input_widget != nullptr) {
+        if (g_signal_handler_is_connected(state->context_input_widget, state->context_input_handler)) {
+            g_signal_handler_disconnect(state->context_input_widget, state->context_input_handler);
+        }
+        g_object_unref(state->context_input_widget);
+        state->context_input_widget = nullptr;
+        state->context_input_handler = 0;
+    }
+    if (state->context_press_event != nullptr) {
+        gdk_event_free(state->context_press_event);
+        state->context_press_event = nullptr;
+    }
     GtkGesture *gesture = state->outside_press_gesture;
     state->outside_press_gesture = nullptr;
     if (gesture != nullptr) {

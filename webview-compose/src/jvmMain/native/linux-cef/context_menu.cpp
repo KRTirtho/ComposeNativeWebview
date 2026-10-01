@@ -7,7 +7,7 @@
 
 /* Native GTK context menu built from CEF's menu model, filtered to the
  * Chromium essentials. Selecting an item runs its browser/frame action on
- * CEF's UI thread. If GTK's seat grab takes the right-button release, menu
+ * CEF's UI thread. If the popover takes the right-button release, menu
  * completion sends that missing release to CEF so its mouse state is balanced. */
 
 namespace {
@@ -34,15 +34,25 @@ struct GtkContextMenuState {
     std::string source_url;
     GtkWidget *parent_widget = nullptr;
     GtkWidget *menu_widget = nullptr;
-    GdkEvent *trigger_event = nullptr;
+    GtkWidget *host_widget = nullptr;
+    std::vector<gulong> host_input_handlers;
     std::atomic<bool> completed{false};
     std::vector<GtkMenuEntry> entries;
     int x = 0;
     int y = 0;
 
     ~GtkContextMenuState() {
-        if (parent_widget != nullptr) g_object_unref(parent_widget);
-        if (trigger_event != nullptr) gdk_event_free(trigger_event);
+        // The last shared reference can be released by the CEF UI task.
+        // Keep widget finalization on the GTK main thread.
+        auto *widgets = new std::pair<GtkWidget *, GtkWidget *>(parent_widget, host_widget);
+        g_idle_add_full(G_PRIORITY_DEFAULT, [](gpointer data) -> gboolean {
+            auto *widgets = static_cast<std::pair<GtkWidget *, GtkWidget *> *>(data);
+            if (widgets->first != nullptr) g_object_unref(widgets->first);
+            if (widgets->second != nullptr) g_object_unref(widgets->second);
+            return G_SOURCE_REMOVE;
+        }, widgets, [](gpointer data) {
+            delete static_cast<std::pair<GtkWidget *, GtkWidget *> *>(data);
+        });
     }
 };
 
@@ -84,9 +94,6 @@ void completeContextMenu(const std::shared_ptr<GtkContextMenuState> &menu, int c
             mouse.modifiers &= ~EVENTFLAG_RIGHT_MOUSE_BUTTON;
             menu->browser->GetHost()->SendMouseClickEvent(mouse, MBT_RIGHT, true, 1);
         }
-        if (!closing && command_id < 0 && menu->browser != nullptr) {
-            menu->browser->GetHost()->SetFocus(false);
-        }
         if (!closing && command_id >= 0) {
             compose_cef_execute_context_menu_command(
                 menu->owner, menu->browser, menu->frame,
@@ -94,33 +101,61 @@ void completeContextMenu(const std::shared_ptr<GtkContextMenuState> &menu, int c
         }
     });
     if (widget != nullptr) {
-        // GtkMenu retains an input grab until it is destroyed. Defer that
-        // destruction until the current activate/deactivate signal returns.
+        menu->menu_widget = nullptr;
+        // Defer popdown/destruction until the current clicked/closed signal
+        // returns; the popover's own handlers are still on the stack.
         g_object_ref(widget);
-        auto *cleanup = new std::pair<GtkWidget *, bool>(widget, command_id < 0);
+        auto *cleanup = new std::pair<GtkWidget *, std::shared_ptr<GtkContextMenuState>>(
+            widget, menu);
         g_idle_add_full(G_PRIORITY_DEFAULT, [](gpointer data) -> gboolean {
-            auto *cleanup = static_cast<std::pair<GtkWidget *, bool> *>(data);
-            auto *menu_widget = cleanup->first;
-            if (!gtk_widget_in_destruction(menu_widget)) {
-                gtk_menu_popdown(GTK_MENU(menu_widget));
-                if (cleanup->second) {
-                    // Clicking outside dismisses the popup but consumes that
-                    // click. GTK can restore focus to the CEF view afterwards;
-                    // explicitly hand keyboard focus back to Tao/Compose.
-                    GtkWidget *view = gtk_menu_get_attach_widget(GTK_MENU(menu_widget));
-                    if (view != nullptr) {
-                        GtkWidget *top = gtk_widget_get_toplevel(view);
-                        if (GTK_IS_WINDOW(top) && gtk_window_get_focus(GTK_WINDOW(top)) == view) {
-                            gtk_window_set_focus(GTK_WINDOW(top), nullptr);
-                        }
+            auto *cleanup = static_cast<std::pair<GtkWidget *, std::shared_ptr<GtkContextMenuState>> *>(data);
+            auto *popover = cleanup->first;
+            if (!gtk_widget_in_destruction(popover)) {
+                // Hide synchronously: release modality and restore the GTK
+                // focus chain before destruction, without a frame-clock race.
+                gtk_widget_hide(popover);
+                gtk_widget_destroy(popover);
+            }
+            const auto &menu = cleanup->second;
+            // Restore exactly the handlers we suspended (not handlers that
+            // the host had already blocked for its own reasons).
+            if (menu->host_widget != nullptr) {
+                for (gulong handler : menu->host_input_handlers) {
+                    if (g_signal_handler_is_connected(menu->host_widget, handler)) {
+                        g_signal_handler_unblock(menu->host_widget, handler);
                     }
                 }
-                gtk_widget_destroy(menu_widget);
+                menu->host_input_handlers.clear();
+                // Publish subsurface teardown before accepting the next
+                // pointer sequence, even when Compose has no redraw pending.
+                gtk_widget_queue_draw(menu->host_widget);
+                gdk_display_flush(gtk_widget_get_display(menu->host_widget));
             }
-            g_object_unref(menu_widget);
-            delete cleanup;
+            compose_cef_finish_context_input(menu->owner);
+            CefRefPtr<CefBrowser> browser;
+            bool focused = false;
+            {
+                std::lock_guard<std::mutex> lock(menu->owner->mutex);
+                if (!menu->owner->closing) {
+                    browser = menu->owner->browser;
+                    focused = menu->owner->widget != nullptr &&
+                              gtk_widget_has_focus(menu->owner->widget);
+                }
+            }
+            // GTK may restore focus while the menu is still marked active,
+            // so reconcile CEF after all popover focus bookkeeping is done.
+            if (browser != nullptr) {
+                compose_cef_post_to_ui([browser, focused] { browser->GetHost()->SetFocus(focused); });
+            }
+            if (g_getenv("COMPOSE_CEF_DEBUG_MENU")) {
+                g_printerr("CEF menu cleanup: focused=%d grab=%p\n", focused, gtk_grab_get_current());
+            }
             return G_SOURCE_REMOVE;
-        }, cleanup, nullptr);
+        }, cleanup, [](gpointer data) {
+            auto *cleanup = static_cast<std::pair<GtkWidget *, std::shared_ptr<GtkContextMenuState>> *>(data);
+            g_object_unref(cleanup->first);
+            delete cleanup;
+        });
     }
 }
 
@@ -248,49 +283,69 @@ std::vector<GtkMenuEntry> copyMenuModel(CefRefPtr<CefMenuModel> model) {
     return entries;
 }
 
-void onGtkMenuItemActivated(GtkMenuItem *, gpointer data) {
+void onGtkMenuItemActivated(GSimpleAction *, GVariant *, gpointer data) {
     auto *action = static_cast<std::shared_ptr<GtkContextMenuAction> *>(data);
     completeContextMenu((*action)->menu, (*action)->command_id);
 }
 
-void appendGtkMenuEntries(
-    GtkWidget *menu_widget,
+GMenu *createGtkMenuModel(
     const std::vector<GtkMenuEntry> &entries,
-    const std::shared_ptr<GtkContextMenuState> &menu_state) {
+    const std::shared_ptr<GtkContextMenuState> &menu_state,
+    GSimpleActionGroup *actions,
+    int &action_index) {
+    GMenu *model = g_menu_new();
+    GMenu *section = g_menu_new();
     for (const GtkMenuEntry &entry : entries) {
         if (entry.type == MENUITEMTYPE_SEPARATOR) {
-            gtk_menu_shell_append(GTK_MENU_SHELL(menu_widget), gtk_separator_menu_item_new());
+            g_menu_append_section(model, nullptr, G_MENU_MODEL(section));
+            g_object_unref(section);
+            section = g_menu_new();
             continue;
         }
-        GtkWidget *item = nullptr;
-        if (entry.type == MENUITEMTYPE_CHECK || entry.type == MENUITEMTYPE_RADIO) {
-            item = gtk_check_menu_item_new_with_label(entry.label.c_str());
-            gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(item), entry.checked);
-        } else {
-            item = gtk_menu_item_new_with_label(entry.label.c_str());
-        }
-        gtk_widget_set_sensitive(item, entry.enabled);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu_widget), item);
-
         if (entry.type == MENUITEMTYPE_SUBMENU) {
-            GtkWidget *submenu = gtk_menu_new();
-            appendGtkMenuEntries(submenu, entry.children, menu_state);
-            gtk_menu_item_set_submenu(GTK_MENU_ITEM(item), submenu);
-        } else if (entry.command_id >= 0) {
-            auto *action = new std::shared_ptr<GtkContextMenuAction>(
+            GMenu *submenu = createGtkMenuModel(entry.children, menu_state, actions, action_index);
+            g_menu_append_submenu(section, entry.label.c_str(), G_MENU_MODEL(submenu));
+            g_object_unref(submenu);
+            continue;
+        }
+        const std::string name = "command" + std::to_string(action_index++);
+        GSimpleAction *action = nullptr;
+        if (entry.type == MENUITEMTYPE_RADIO) {
+            action = g_simple_action_new_stateful(name.c_str(), G_VARIANT_TYPE_STRING,
+                g_variant_new_string(entry.checked ? "selected" : ""));
+        } else if (entry.type == MENUITEMTYPE_CHECK) {
+            action = g_simple_action_new_stateful(name.c_str(), nullptr,
+                                                  g_variant_new_boolean(entry.checked));
+        } else {
+            action = g_simple_action_new(name.c_str(), nullptr);
+        }
+        g_simple_action_set_enabled(action, entry.enabled);
+        if (entry.command_id >= 0) {
+            auto *payload = new std::shared_ptr<GtkContextMenuAction>(
                 std::make_shared<GtkContextMenuAction>(
                     GtkContextMenuAction{menu_state, entry.command_id}));
             g_signal_connect_data(
-                item,
+                action,
                 "activate",
                 G_CALLBACK(onGtkMenuItemActivated),
-                action,
+                payload,
                 [](gpointer data, GClosure *) {
                     delete static_cast<std::shared_ptr<GtkContextMenuAction> *>(data);
                 },
                 G_CONNECT_DEFAULT);
         }
+        g_action_map_add_action(G_ACTION_MAP(actions), G_ACTION(action));
+        g_object_unref(action);
+        const std::string detailed_action = "context." + name;
+        GMenuItem *item = g_menu_item_new(entry.label.c_str(), nullptr);
+        g_menu_item_set_action_and_target_value(item, detailed_action.c_str(),
+            entry.type == MENUITEMTYPE_RADIO ? g_variant_new_string("selected") : nullptr);
+        g_menu_append_item(section, item);
+        g_object_unref(item);
     }
+    g_menu_append_section(model, nullptr, G_MENU_MODEL(section));
+    g_object_unref(section);
+    return model;
 }
 
 gboolean showGtkContextMenu(gpointer data) {
@@ -307,68 +362,97 @@ gboolean showGtkContextMenu(gpointer data) {
         return G_SOURCE_REMOVE;
     }
 
-    GtkWidget *gtk_menu = gtk_menu_new();
+    // Unlike GtkMenu's separate popup surface and seat grab, a GtkPopover
+    // stays inside the host GTK window. Window activation is not transferred
+    // to another surface; GTK owns the temporary widget focus and restores it.
+    GtkWidget *top = gtk_widget_get_toplevel(state->parent_widget);
+    if (GTK_IS_WINDOW(top)) {
+        state->host_widget = GTK_WIDGET(g_object_ref(top));
+        // GTK's WM-event precheck emits input signals on GtkWindow BEFORE
+        // routing to the modal grab. Tao consumes those signals, preventing
+        // the popover's buttons and outside-click dismissal from seeing them.
+        // While this native menu is modal, let GTK route input to its grab
+        // instead of forwarding it to the Compose scene behind the menu.
+        const char *signals[] = {
+            "button-press-event", "button-release-event", "motion-notify-event",
+            "scroll-event", "key-press-event", "key-release-event"
+        };
+        for (const char *signal : signals) {
+            const guint id = g_signal_lookup(signal, GTK_TYPE_WIDGET);
+            gulong handler = 0;
+            while ((handler = g_signal_handler_find(top,
+                       static_cast<GSignalMatchType>(G_SIGNAL_MATCH_ID | G_SIGNAL_MATCH_UNBLOCKED),
+                       id, 0, nullptr, nullptr, nullptr)) != 0) {
+                state->host_input_handlers.push_back(handler);
+                g_signal_handler_block(top, handler);
+            }
+        }
+    }
+    GSimpleActionGroup *actions = g_simple_action_group_new();
+    int action_index = 0;
+    GMenu *model = createGtkMenuModel(state->entries, state, actions, action_index);
+    GtkWidget *popover = gtk_popover_new_from_model(state->parent_widget, G_MENU_MODEL(model));
+    gtk_widget_insert_action_group(popover, "context", G_ACTION_GROUP(actions));
+    g_object_unref(model);
+    g_object_unref(actions);
     bool owner_closing = false;
     {
         std::lock_guard<std::mutex> lock(state->owner->mutex);
         owner_closing = state->owner->closing;
+        state->menu_widget = popover;
         if (!owner_closing) {
-            state->owner->active_menu_widget = gtk_menu;
-            state->menu_widget = gtk_menu;
+            state->owner->active_menu_widget = popover;
         }
     }
     if (owner_closing) {
         completeContextMenu(state, -1);
-        gtk_widget_destroy(gtk_menu);
         return G_SOURCE_REMOVE;
     }
 
-    appendGtkMenuEntries(gtk_menu, state->entries, state);
-    auto *deactivate_payload = new std::shared_ptr<GtkContextMenuState>(state);
+    // "closed" fires on outside-click dismissal, Escape, and after an item's
+    // action handler completes the menu. The CAS in
+    // completeContextMenu makes double-completion harmless.
+    auto *closed_payload = new std::shared_ptr<GtkContextMenuState>(state);
     g_signal_connect_data(
-        gtk_menu,
-        "deactivate",
-        G_CALLBACK(+[](GtkMenuShell *shell, gpointer context) {
+        popover,
+        "closed",
+        G_CALLBACK(+[](GtkWidget *, gpointer context) {
             auto *menu_state = static_cast<std::shared_ptr<GtkContextMenuState> *>(context);
-            (void)shell;
-            if (g_getenv("COMPOSE_CEF_DEBUG_MENU")) g_printerr("CEF context menu deactivated\n");
-            completeContextMenu(*menu_state, -1);
+            if (g_getenv("COMPOSE_CEF_DEBUG_MENU")) g_printerr("CEF context menu closed\n");
+            // GTK's model button can emit "closed" before activating its
+            // GAction. Allow that action to complete first; only treat this
+            // as cancellation if no action was selected in this event turn.
+            auto *payload = new std::shared_ptr<GtkContextMenuState>(*menu_state);
+            g_idle_add_full(G_PRIORITY_DEFAULT, [](gpointer data) -> gboolean {
+                completeContextMenu(*static_cast<std::shared_ptr<GtkContextMenuState> *>(data), -1);
+                return G_SOURCE_REMOVE;
+            }, payload, [](gpointer data) {
+                delete static_cast<std::shared_ptr<GtkContextMenuState> *>(data);
+            });
         }),
-        deactivate_payload,
+        closed_payload,
         [](gpointer value, GClosure *) {
             delete static_cast<std::shared_ptr<GtkContextMenuState> *>(value);
         },
         G_CONNECT_DEFAULT);
-    gtk_menu_attach_to_widget(GTK_MENU(gtk_menu), state->parent_widget, nullptr);
-    gtk_widget_show_all(gtk_menu);
-    // CefContextMenuParams coordinates are local to the view; the widget's
-    // GdkWindow is also local to the view. Adding its parent allocation here
-    // moves the menu away from the click (and often off-screen).
+
+    // CefContextMenuParams coordinates are local to the view, and the popover
+    // is relative to the view — direct mapping, no translation needed.
     GdkRectangle anchor{state->x, state->y, 1, 1};
-    GdkWindow *parent_window = gtk_widget_get_window(state->parent_widget);
-    if (parent_window == nullptr) {
-        completeContextMenu(state, -1);
-        gtk_widget_destroy(gtk_menu);
-        return G_SOURCE_REMOVE;
-    }
-    gtk_menu_popup_at_rect(
-        GTK_MENU(gtk_menu),
-        parent_window,
-        &anchor,
-        GDK_GRAVITY_SOUTH_WEST,
-        GDK_GRAVITY_NORTH_WEST,
-        state->trigger_event);
-    // gtk_menu_popup_internal() returns early if its GDK seat grab fails and
-    // does not emit "deactivate". Without this check we'd retain an active
-    // menu and CEF's unmatched right-button press indefinitely.
-    if (gtk_grab_get_current() != gtk_menu) {
+    gtk_popover_set_pointing_to(GTK_POPOVER(popover), &anchor);
+    gtk_popover_set_position(GTK_POPOVER(popover), GTK_POS_BOTTOM);
+    // No popup animation: Nucleus drives its own render loop, not GTK's.
+    // Showing directly avoids relying on frame-clock transition completion
+    // for the popover's input region or dismissal.
+    gtk_widget_show(popover);
+    // A modal popover holds a GTK grab while visible; if the grab failed
+    // (e.g. another grab is active) no "closed" signal will come either.
+    if (gtk_grab_get_current() != popover) {
         if (g_getenv("COMPOSE_CEF_DEBUG_MENU")) {
             g_printerr("CEF context menu: GTK grab failed, cancelling\n");
         }
         completeContextMenu(state, -1);
     }
-    if (state->trigger_event != nullptr) gdk_event_free(state->trigger_event);
-    state->trigger_event = nullptr;
     return G_SOURCE_REMOVE;
 }
 
@@ -496,14 +580,10 @@ bool compose_cef_run_context_menu(
         g_printerr("CEF RunContextMenu: %zu model items\n", model->GetCount());
     }
     GtkWidget *widget = nullptr;
-    GdkEvent *trigger_event = nullptr;
     {
         std::lock_guard<std::mutex> lock(state->mutex);
         widget = state->widget;
         if (widget != nullptr) g_object_ref(widget);
-        if (state->last_context_event != nullptr) {
-            trigger_event = gdk_event_copy(state->last_context_event);
-        }
     }
     auto menu = std::make_shared<GtkContextMenuState>();
     menu->callback = callback;
@@ -514,7 +594,6 @@ bool compose_cef_run_context_menu(
     menu->source_url = params->GetSourceUrl().ToString();
     menu->entries = copyMenuModel(model);
     menu->parent_widget = widget;
-    menu->trigger_event = trigger_event;
     menu->x = params->GetXCoord();
     menu->y = params->GetYCoord();
     auto *payload = new std::shared_ptr<GtkContextMenuState>(menu);

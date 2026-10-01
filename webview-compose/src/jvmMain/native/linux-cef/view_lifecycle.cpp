@@ -201,7 +201,6 @@ void compose_cef_release(const std::shared_ptr<ComposeCefViewState> &s) {
     CefRefPtr<CefBrowser> browser;
     GtkWidget *widget = nullptr;
     GtkWidget *active_menu = nullptr;
-    GdkEvent *last_event = nullptr;
     {
         std::lock_guard<std::mutex> lock(s->mutex);
         s->closing = true;
@@ -210,11 +209,8 @@ void compose_cef_release(const std::shared_ptr<ComposeCefViewState> &s) {
         s->widget = nullptr;
         active_menu = s->active_menu_widget;
         s->active_menu_widget = nullptr;
-        last_event = s->last_context_event;
-        s->last_context_event = nullptr;
     }
     if (active_menu != nullptr) gtk_widget_destroy(active_menu);
-    if (last_event != nullptr) gdk_event_free(last_event);
     if (browser.get() != nullptr) {
         compose_cef_post_to_ui([browser] { browser->GetHost()->CloseBrowser(true); });
     }

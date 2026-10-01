@@ -115,6 +115,7 @@ void compose_cef_queue_draw(const std::shared_ptr<ComposeCefViewState> &state);
 /* view_input.cpp — GTK signal handlers forwarding input to CEF. */
 void compose_cef_connect_input(GtkWidget *widget, const std::shared_ptr<ComposeCefViewState> &state);
 void compose_cef_disconnect_input(const std::shared_ptr<ComposeCefViewState> &state);
+void compose_cef_finish_context_input(const std::shared_ptr<ComposeCefViewState> &state);
 
 /* context_menu.cpp — native GTK menu built from CEF's menu model. */
 void compose_cef_prepare_context_menu(
@@ -183,9 +184,14 @@ struct ComposeCefViewState : public std::enable_shared_from_this<ComposeCefViewS
     std::map<std::string, CefRequest::HeaderMap> navigation_headers;
 
     /* Context-menu plumbing (context_menu.cpp). */
-    GdkEvent *last_context_event = nullptr;
     GtkWidget *active_menu_widget = nullptr;
-    /* GTK's menu seat grab can redirect the release away from this widget. */
+    // Original GTK input (before Nucleus retargets it to the CEF drawing area).
+    // A popup may consume the release after Compose has already seen the press.
+    GdkEvent *context_press_event = nullptr;
+    GtkWidget *context_input_widget = nullptr;
+    gulong context_input_handler = 0;
+    bool context_release_pending = false; // GTK main thread only
+    /* The popover's GTK grab can redirect the release away from this widget. */
     CefMouseEvent last_context_mouse;
     std::atomic<bool> right_button_pending{false};
 };
