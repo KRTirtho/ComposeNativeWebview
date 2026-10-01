@@ -232,6 +232,7 @@ void compose_cef_release(const std::shared_ptr<ComposeCefViewState> &s) {
     if (!closed) fprintf(stderr, "CEF browser did not close within 10s; leaving CEF running\n");
     browser = nullptr;
     if (widget != nullptr) {
+        compose_cef_disconnect_input(s);
         gtk_widget_destroy(widget);
         g_object_unref(widget);
     }
@@ -348,27 +349,6 @@ Java_dev_nucleusframework_webview_web_linux_CefLinuxBridge_nativeResize(
     auto it = g_handles.find(handle);
     if (it != g_handles.end()) {
         compose_cef_resize(it->second, widthPx, heightPx);
-    }
-}
-
-JNIEXPORT void JNICALL
-Java_dev_nucleusframework_webview_web_linux_CefLinuxBridge_nativeBlur(
-    JNIEnv *, jclass, jlong handle) {
-    auto state = compose_cef_shared_from_handle(handle);
-    if (state == nullptr) return;
-    GtkWidget *widget = nullptr;
-    CefRefPtr<CefBrowser> browser;
-    {
-        std::lock_guard<std::mutex> lock(state->mutex);
-        widget = state->widget;
-        browser = state->browser;
-    }
-    if (widget != nullptr && gtk_widget_has_focus(widget)) {
-        GtkWidget *top = gtk_widget_get_toplevel(widget);
-        if (GTK_IS_WINDOW(top)) gtk_window_set_focus(GTK_WINDOW(top), nullptr);
-    }
-    if (browser != nullptr) {
-        compose_cef_post_to_ui([browser] { browser->GetHost()->SetFocus(false); });
     }
 }
 

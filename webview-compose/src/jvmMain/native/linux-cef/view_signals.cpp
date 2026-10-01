@@ -124,12 +124,12 @@ public:
     }
 
     bool RunContextMenu(
-        CefRefPtr<CefBrowser>,
-        CefRefPtr<CefFrame>,
+        CefRefPtr<CefBrowser> browser,
+        CefRefPtr<CefFrame> frame,
         CefRefPtr<CefContextMenuParams> params,
         CefRefPtr<CefMenuModel> model,
         CefRefPtr<CefRunContextMenuCallback> callback) override {
-        return compose_cef_run_context_menu(state_, model, callback, params);
+        return compose_cef_run_context_menu(state_, browser, frame, model, callback, params);
     }
 
     bool OnContextMenuCommand(
@@ -137,7 +137,7 @@ public:
         CefRefPtr<CefFrame> frame,
         CefRefPtr<CefContextMenuParams> params,
         int command_id, EventFlags) override {
-        return compose_cef_handle_context_menu_command(browser, frame, params, command_id);
+        return compose_cef_handle_context_menu_command(state_, browser, frame, params, command_id);
     }
 
     /* ── CefDisplayHandler ────────────────────────────────────────────── */
@@ -160,6 +160,11 @@ public:
         const CefString &,
         int) override {
         const std::string text = message.ToString();
+        if (text.starts_with("__compose_cef_paste_ok:")) {
+            if (g_getenv("COMPOSE_CEF_DEBUG_INPUT")) g_printerr("CEF paste result: %s\n", text.c_str());
+            return true;
+        }
+        if (compose_cef_handle_clipboard_console(state_, text)) return true;
         static const std::string prefix = "__compose_cef_js:";
         if (text.compare(0, prefix.size(), prefix) == 0) {
             compose_cef_call_on_js_result(state_->handle, text.substr(prefix.size()));

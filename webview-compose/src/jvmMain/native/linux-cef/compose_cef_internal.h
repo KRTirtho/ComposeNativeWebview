@@ -63,6 +63,14 @@ void compose_cef_call_on_cookies(jlong handle, const std::string &json);
 void compose_cef_call_on_screenshot(jlong handle, const std::vector<uint8_t> &png);
 void compose_cef_call_on_pointer_focus(jlong handle);
 
+/* clipboard.cpp — bridge CEF's OSR clipboard to the GTK system clipboard. */
+void compose_cef_copy_selection(const std::shared_ptr<ComposeCefViewState> &state,
+                                CefRefPtr<CefBrowser> browser,
+                                CefRefPtr<CefFrame> frame, bool cut);
+void compose_cef_paste_system_clipboard(CefRefPtr<CefBrowser> browser);
+bool compose_cef_handle_clipboard_console(const std::shared_ptr<ComposeCefViewState> &state,
+                                          const std::string &message);
+
 /* view_lifecycle.cpp */
 std::string compose_cef_jstring_to_utf8(JNIEnv *env, jstring s);
 jstring compose_cef_utf8_to_jstring(JNIEnv *env, const std::string &s);
@@ -106,18 +114,29 @@ void compose_cef_queue_draw(const std::shared_ptr<ComposeCefViewState> &state);
 
 /* view_input.cpp — GTK signal handlers forwarding input to CEF. */
 void compose_cef_connect_input(GtkWidget *widget, const std::shared_ptr<ComposeCefViewState> &state);
+void compose_cef_disconnect_input(const std::shared_ptr<ComposeCefViewState> &state);
 
 /* context_menu.cpp — native GTK menu built from CEF's menu model. */
 void compose_cef_prepare_context_menu(
     CefRefPtr<CefContextMenuParams> params,
     CefRefPtr<CefMenuModel> model);
 bool compose_cef_handle_context_menu_command(
+    const std::shared_ptr<ComposeCefViewState> &state,
     CefRefPtr<CefBrowser> browser,
     CefRefPtr<CefFrame> frame,
     CefRefPtr<CefContextMenuParams> params,
     int command_id);
+bool compose_cef_execute_context_menu_command(
+    const std::shared_ptr<ComposeCefViewState> &state,
+    CefRefPtr<CefBrowser> browser,
+    CefRefPtr<CefFrame> frame,
+    const std::string &link_url,
+    const std::string &source_url,
+    int command_id);
 bool compose_cef_run_context_menu(
     const std::shared_ptr<ComposeCefViewState> &state,
+    CefRefPtr<CefBrowser> browser,
+    CefRefPtr<CefFrame> frame,
     CefRefPtr<CefMenuModel> model,
     CefRefPtr<CefRunContextMenuCallback> callback,
     CefRefPtr<CefContextMenuParams> params);
@@ -128,6 +147,7 @@ struct ComposeCefViewState : public std::enable_shared_from_this<ComposeCefViewS
     std::condition_variable closed_condition;
     jlong handle = 0;
     GtkWidget *widget = nullptr;
+    GtkGesture *outside_press_gesture = nullptr;
     CefRefPtr<CefBrowser> browser;
 
     /* Latest full OSR frame (BGRA premultiplied), drawn by view_render. */
@@ -137,6 +157,7 @@ struct ComposeCefViewState : public std::enable_shared_from_this<ComposeCefViewS
 
     std::atomic<bool> gtk_draw_pending{false};
     std::atomic<bool> cef_resize_pending{false};
+    std::atomic<int> clipboard_copies_pending{0};
 
     int width = 0;
     int height = 0;

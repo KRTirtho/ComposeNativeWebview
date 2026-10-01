@@ -1,7 +1,6 @@
 package dev.nucleusframework.webview.web
 
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -14,9 +13,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -373,28 +369,14 @@ actual fun ActualWebView(
             }
         }
         linuxCefWebView != null && LocalWebViewFactory.current == null -> {
-            val focusRequester = remember(nativeWebView) { FocusRequester() }
             val focusManager = LocalFocusManager.current
-            val viewIsFocused = remember(nativeWebView) { booleanArrayOf(false) }
-            DisposableEffect(nativeWebView, focusRequester, focusManager) {
-                linuxCefWebView.setOnPointerFocus {
-                    if (!viewIsFocused[0]) {
-                        focusManager.clearFocus(force = true)
-                        focusRequester.requestFocus()
-                    }
-                }
+            DisposableEffect(nativeWebView, focusManager) {
+                linuxCefWebView.setOnPointerFocus { focusManager.clearFocus(force = true) }
                 onDispose { linuxCefWebView.setOnPointerFocus(null) }
             }
             NativeView(
                 factory = { linuxCefWebView.asPlatformView() },
-                modifier = modifier
-                    .focusRequester(focusRequester)
-                    .onFocusChanged {
-                        val lostFocus = viewIsFocused[0] && !it.isFocused
-                        viewIsFocused[0] = it.isFocused
-                        if (lostFocus) linuxCefWebView.blur()
-                    }
-                    .focusable(),
+                modifier = modifier,
                 update = { },
                 content = {
                     if (System.getProperty("compose.reload.isActive") == "true") {

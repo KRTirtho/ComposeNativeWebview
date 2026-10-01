@@ -308,6 +308,4 @@ internal object CefLinuxBridge {
     @JvmStatic
     external fun nativeResize(handle: Long, widthPx: Int, heightPx: Int)
 
-    @JvmStatic
-    external fun nativeBlur(handle: Long)
 }

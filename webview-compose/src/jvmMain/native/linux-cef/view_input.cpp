@@ -227,29 +227,25 @@ gboolean onKey(GtkWidget *, GdkEventKey *event, gpointer data) {
                     g_printerr("CEF edit shortcut: %c (shift=%d)\n",
                                static_cast<char>(keyval), shift);
                 }
-                // CEF's windowless Linux browser does not execute the default
-                // editing accelerators for synthetic GDK key events. Use the
-                // focused frame's edit commands instead (and don't forward
-                // the keystroke as well, which would paste/cut twice).
-                compose_cef_post_to_ui([browser, keyval, shift] {
-                    CefRefPtr<CefFrame> frame = browser->GetFocusedFrame();
-                    if (frame == nullptr) frame = browser->GetMainFrame();
-                    if (frame == nullptr) return;
-                    switch (keyval) {
-                        case GDK_KEY_c: frame->Copy(); break;
-                        case GDK_KEY_x: frame->Cut(); break;
-                        case GDK_KEY_v:
-                            if (shift) frame->PasteAndMatchStyle();
-                            else frame->Paste();
-                            break;
-                        case GDK_KEY_a: frame->SelectAll(); break;
-                        case GDK_KEY_z:
-                            if (shift) frame->Redo();
-                            else frame->Undo();
-                            break;
-                        case GDK_KEY_y: frame->Redo(); break;
-                    }
-                });
+                if (keyval == GDK_KEY_v) {
+                    compose_cef_paste_system_clipboard(browser);
+                } else {
+                    compose_cef_post_to_ui([state, browser, keyval, shift] {
+                        CefRefPtr<CefFrame> frame = browser->GetFocusedFrame();
+                        if (frame == nullptr) frame = browser->GetMainFrame();
+                        if (frame == nullptr) return;
+                        switch (keyval) {
+                            case GDK_KEY_c: compose_cef_copy_selection(state, browser, frame, false); break;
+                            case GDK_KEY_x: compose_cef_copy_selection(state, browser, frame, true); break;
+                            case GDK_KEY_a: frame->SelectAll(); break;
+                            case GDK_KEY_z:
+                                if (shift) frame->Redo();
+                                else frame->Undo();
+                                break;
+                            case GDK_KEY_y: frame->Redo(); break;
+                        }
+                    });
+                }
             }
             return TRUE;
         }
@@ -300,7 +296,61 @@ gboolean onFocusOut(GtkWidget *, GdkEventFocus *, gpointer data) {
     return FALSE;
 }
 
+void onOutsidePress(GtkGestureMultiPress *gesture, gint, gdouble x, gdouble y,
+                    gpointer data) {
+    auto *state = static_cast<ComposeCefViewState *>(data);
+    GtkWidget *widget = state->widget;
+    GtkWidget *top = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
+    if (widget == nullptr || !GTK_IS_WINDOW(top)) return;
+    int wx = 0, wy = 0;
+    if (gtk_widget_translate_coordinates(top, widget, static_cast<int>(x),
+                                         static_cast<int>(y), &wx, &wy)) {
+        GtkAllocation rect;
+        gtk_widget_get_allocation(widget, &rect);
+        if (wx >= 0 && wy >= 0 && wx < rect.width && wy < rect.height) return;
+    }
+    // Nucleus paints Compose over the same GTK window; moving Compose focus
+    // does not always change GTK's focused widget. Capture the actual GTK
+    // press before a child consumes it and relinquish CEF's keyboard focus.
+    if (g_getenv("COMPOSE_CEF_DEBUG_INPUT")) g_printerr("CEF outside press: blur\n");
+    if (gtk_widget_has_focus(widget)) gtk_window_set_focus(GTK_WINDOW(top), nullptr);
+    CefRefPtr<CefBrowser> browser;
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        browser = state->browser;
+    }
+    if (browser != nullptr) {
+        compose_cef_post_to_ui([browser] { browser->GetHost()->SetFocus(false); });
+    }
+}
+
+void onHierarchyChanged(GtkWidget *widget, GtkWidget *, gpointer data) {
+    auto *state = static_cast<ComposeCefViewState *>(data);
+    if (state->outside_press_gesture != nullptr) {
+        g_signal_handlers_disconnect_by_data(state->outside_press_gesture, state);
+        g_object_unref(state->outside_press_gesture);
+        state->outside_press_gesture = nullptr;
+    }
+    GtkWidget *top = gtk_widget_get_toplevel(widget);
+    if (state->closing || !GTK_IS_WINDOW(top)) return;
+    if (g_getenv("COMPOSE_CEF_DEBUG_INPUT")) g_printerr("CEF GTK focus capture attached\n");
+    GtkGesture *gesture = gtk_gesture_multi_press_new(top);
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(gesture), 0);
+    gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(gesture), GTK_PHASE_CAPTURE);
+    g_signal_connect(gesture, "pressed", G_CALLBACK(onOutsidePress), state);
+    state->outside_press_gesture = gesture;
+}
+
 }  // namespace
+
+void compose_cef_disconnect_input(const std::shared_ptr<ComposeCefViewState> &state) {
+    GtkGesture *gesture = state->outside_press_gesture;
+    state->outside_press_gesture = nullptr;
+    if (gesture != nullptr) {
+        g_signal_handlers_disconnect_by_data(gesture, state.get());
+        g_object_unref(gesture);
+    }
+}
 
 void compose_cef_connect_input(
     GtkWidget *widget,
@@ -320,4 +370,5 @@ void compose_cef_connect_input(
     g_signal_connect(widget, "key-release-event", G_CALLBACK(onKey), state_data);
     g_signal_connect(widget, "focus-in-event", G_CALLBACK(onFocusIn), state_data);
     g_signal_connect(widget, "focus-out-event", G_CALLBACK(onFocusOut), state_data);
+    g_signal_connect(widget, "hierarchy-changed", G_CALLBACK(onHierarchyChanged), state.get());
 }

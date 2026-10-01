@@ -4,9 +4,9 @@
 #include "include/wrapper/cef_helpers.h"
 
 /* Native GTK context menu built from CEF's menu model, filtered to the
- * Chromium essentials. Selecting an item forwards the real CEF command id back
- * to Chromium via CefRunContextMenuCallback::Continue. The right-button release
- * that follows the press is swallowed in view_input.cpp so the menu survives. */
+ * Chromium essentials. Selecting an item runs its browser/frame action on
+ * CEF's UI thread. The right-button release that follows the press is
+ * swallowed in view_input.cpp so the menu survives. */
 
 namespace {
 
@@ -25,7 +25,11 @@ struct GtkMenuEntry {
 
 struct GtkContextMenuState {
     CefRefPtr<CefRunContextMenuCallback> callback;
+    CefRefPtr<CefBrowser> browser;
+    CefRefPtr<CefFrame> frame;
     std::shared_ptr<ComposeCefViewState> owner;
+    std::string link_url;
+    std::string source_url;
     GtkWidget *parent_widget = nullptr;
     GtkWidget *menu_widget = nullptr;
     GdkEvent *trigger_event = nullptr;
@@ -55,10 +59,21 @@ void completeContextMenu(const std::shared_ptr<GtkContextMenuState> &menu, int c
             menu->owner->active_menu_widget = nullptr;
         }
     }
-    auto callback = menu->callback;
-    compose_cef_post_to_ui([callback, command_id] {
-        if (command_id >= 0) callback->Continue(command_id, EVENTFLAG_NONE);
-        else callback->Cancel();
+    compose_cef_post_to_ui([menu, command_id] {
+        // Complete CEF's pending menu first, then execute our selected action
+        // directly. Continue(IDC_*) is not reliable with Chrome-style OSR
+        // menus and silently ignores navigation/editing on some builds.
+        menu->callback->Cancel();
+        bool closing = false;
+        {
+            std::lock_guard<std::mutex> lock(menu->owner->mutex);
+            closing = menu->owner->closing;
+        }
+        if (!closing && command_id >= 0) {
+            compose_cef_execute_context_menu_command(
+                menu->owner, menu->browser, menu->frame,
+                menu->link_url, menu->source_url, command_id);
+        }
     });
     if (widget != nullptr) {
         // GtkMenu retains an input grab until it is destroyed. Defer that
@@ -66,7 +81,10 @@ void completeContextMenu(const std::shared_ptr<GtkContextMenuState> &menu, int c
         g_object_ref(widget);
         g_idle_add_full(G_PRIORITY_DEFAULT, [](gpointer data) -> gboolean {
             auto *menu_widget = GTK_WIDGET(data);
-            gtk_widget_destroy(menu_widget);
+            if (!gtk_widget_in_destruction(menu_widget)) {
+                gtk_menu_popdown(GTK_MENU(menu_widget));
+                gtk_widget_destroy(menu_widget);
+            }
             g_object_unref(menu_widget);
             return G_SOURCE_REMOVE;
         }, widget, nullptr);
@@ -364,43 +382,61 @@ void compose_cef_prepare_context_menu(
 }
 
 bool compose_cef_handle_context_menu_command(
+    const std::shared_ptr<ComposeCefViewState> &state,
     CefRefPtr<CefBrowser> browser,
     CefRefPtr<CefFrame> frame,
     CefRefPtr<CefContextMenuParams> params,
     int command_id) {
+    if (params == nullptr) return false;
+    return compose_cef_execute_context_menu_command(
+        state, browser, frame, params->GetUnfilteredLinkUrl().ToString(),
+        params->GetSourceUrl().ToString(), command_id);
+}
+
+bool compose_cef_execute_context_menu_command(
+    const std::shared_ptr<ComposeCefViewState> &state,
+    CefRefPtr<CefBrowser> browser,
+    CefRefPtr<CefFrame> frame,
+    const std::string &link_url,
+    const std::string &source_url,
+    int command_id) {
     if (g_getenv("COMPOSE_CEF_DEBUG_MENU")) {
         g_printerr("CEF context menu command: %d\n", command_id);
     }
-    if (browser == nullptr || params == nullptr) return false;
+    if (browser == nullptr) return false;
     if (frame == nullptr) frame = browser->GetMainFrame();
     if (frame == nullptr) return false;
     switch (command_id) {
         case MENU_ID_UNDO: case IDC_CONTENT_CONTEXT_UNDO: frame->Undo(); return true;
         case MENU_ID_REDO: case IDC_CONTENT_CONTEXT_REDO: frame->Redo(); return true;
-        case MENU_ID_CUT: case IDC_CONTENT_CONTEXT_CUT: frame->Cut(); return true;
-        case MENU_ID_COPY: case IDC_CONTENT_CONTEXT_COPY: frame->Copy(); return true;
-        case MENU_ID_PASTE: case IDC_CONTENT_CONTEXT_PASTE: frame->Paste(); return true;
+        case MENU_ID_CUT: case IDC_CONTENT_CONTEXT_CUT:
+            compose_cef_copy_selection(state, browser, frame, true); return true;
+        case MENU_ID_COPY: case IDC_CONTENT_CONTEXT_COPY:
+            compose_cef_copy_selection(state, browser, frame, false); return true;
+        case MENU_ID_PASTE: case IDC_CONTENT_CONTEXT_PASTE:
+            compose_cef_paste_system_clipboard(browser); return true;
         case MENU_ID_PASTE_MATCH_STYLE:
-        case IDC_CONTENT_CONTEXT_PASTE_AND_MATCH_STYLE: frame->PasteAndMatchStyle(); return true;
+        case IDC_CONTENT_CONTEXT_PASTE_AND_MATCH_STYLE:
+            compose_cef_paste_system_clipboard(browser); return true;
         case MENU_ID_DELETE: case IDC_CONTENT_CONTEXT_DELETE: frame->Delete(); return true;
         case MENU_ID_SELECT_ALL: case IDC_CONTENT_CONTEXT_SELECTALL: frame->SelectAll(); return true;
         case MENU_ID_BACK: case IDC_BACK: browser->GoBack(); return true;
         case MENU_ID_FORWARD: case IDC_FORWARD: browser->GoForward(); return true;
         case MENU_ID_RELOAD: case IDC_RELOAD: browser->Reload(); return true;
         case IDC_CONTENT_CONTEXT_OPENLINKNEWTAB:
-            browser->GetMainFrame()->LoadURL(params->GetLinkUrl());
+            browser->GetMainFrame()->LoadURL(CefString(link_url));
             return true;
         case kCopyLinkAddress:
         case IDC_CONTENT_CONTEXT_COPYLINKLOCATION:
-            copyTextToClipboard(params->GetUnfilteredLinkUrl().ToString());
+            copyTextToClipboard(link_url);
             return true;
         case kCopyImageAddress:
         case IDC_CONTENT_CONTEXT_COPYIMAGELOCATION:
-            copyTextToClipboard(params->GetSourceUrl().ToString());
+            copyTextToClipboard(source_url);
             return true;
         case kCopyImage:
         case IDC_CONTENT_CONTEXT_COPYIMAGE:
-            browser->GetHost()->DownloadImage(params->GetSourceUrl(), false, 0, false,
+            browser->GetHost()->DownloadImage(CefString(source_url), false, 0, false,
                                                new CopyImageCallback());
             return true;
         default: return false;
@@ -409,6 +445,8 @@ bool compose_cef_handle_context_menu_command(
 
 bool compose_cef_run_context_menu(
     const std::shared_ptr<ComposeCefViewState> &state,
+    CefRefPtr<CefBrowser> browser,
+    CefRefPtr<CefFrame> frame,
     CefRefPtr<CefMenuModel> model,
     CefRefPtr<CefRunContextMenuCallback> callback,
     CefRefPtr<CefContextMenuParams> params) {
@@ -427,7 +465,11 @@ bool compose_cef_run_context_menu(
     }
     auto menu = std::make_shared<GtkContextMenuState>();
     menu->callback = callback;
+    menu->browser = browser;
+    menu->frame = frame;
     menu->owner = state;
+    menu->link_url = params->GetUnfilteredLinkUrl().ToString();
+    menu->source_url = params->GetSourceUrl().ToString();
     menu->entries = copyMenuModel(model);
     menu->parent_widget = widget;
     menu->trigger_event = trigger_event;

@@ -37,6 +37,7 @@ add_library(compose_cef_linux SHARED
     view_render.cpp
     view_input.cpp
     context_menu.cpp
+    clipboard.cpp
     navigation.cpp
     javascript.cpp
     cookies.cpp
