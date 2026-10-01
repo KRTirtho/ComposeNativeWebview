@@ -185,6 +185,9 @@ struct ComposeCefViewState : public std::enable_shared_from_this<ComposeCefViewS
     /* Context-menu plumbing (context_menu.cpp). */
     GdkEvent *last_context_event = nullptr;
     GtkWidget *active_menu_widget = nullptr;
+    /* GTK's menu seat grab can redirect the release away from this widget. */
+    CefMouseEvent last_context_mouse;
+    std::atomic<bool> right_button_pending{false};
 };
 
 #endif /* COMPOSE_CEF_INTERNAL_H */

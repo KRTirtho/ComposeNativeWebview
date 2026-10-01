@@ -3,10 +3,12 @@
 #include "include/cef_image.h"
 #include "include/wrapper/cef_helpers.h"
 
+#include <utility>
+
 /* Native GTK context menu built from CEF's menu model, filtered to the
  * Chromium essentials. Selecting an item runs its browser/frame action on
- * CEF's UI thread. The right-button release that follows the press is
- * swallowed in view_input.cpp so the menu survives. */
+ * CEF's UI thread. If GTK's seat grab takes the right-button release, menu
+ * completion sends that missing release to CEF so its mouse state is balanced. */
 
 namespace {
 
@@ -69,6 +71,22 @@ void completeContextMenu(const std::shared_ptr<GtkContextMenuState> &menu, int c
             std::lock_guard<std::mutex> lock(menu->owner->mutex);
             closing = menu->owner->closing;
         }
+        if (menu->owner->right_button_pending.exchange(false) && !closing &&
+            menu->browser != nullptr) {
+            if (g_getenv("COMPOSE_CEF_DEBUG_MENU")) {
+                g_printerr("CEF menu: sending missing right-button release\n");
+            }
+            CefMouseEvent mouse;
+            {
+                std::lock_guard<std::mutex> lock(menu->owner->mutex);
+                mouse = menu->owner->last_context_mouse;
+            }
+            mouse.modifiers &= ~EVENTFLAG_RIGHT_MOUSE_BUTTON;
+            menu->browser->GetHost()->SendMouseClickEvent(mouse, MBT_RIGHT, true, 1);
+        }
+        if (!closing && command_id < 0 && menu->browser != nullptr) {
+            menu->browser->GetHost()->SetFocus(false);
+        }
         if (!closing && command_id >= 0) {
             compose_cef_execute_context_menu_command(
                 menu->owner, menu->browser, menu->frame,
@@ -79,15 +97,30 @@ void completeContextMenu(const std::shared_ptr<GtkContextMenuState> &menu, int c
         // GtkMenu retains an input grab until it is destroyed. Defer that
         // destruction until the current activate/deactivate signal returns.
         g_object_ref(widget);
+        auto *cleanup = new std::pair<GtkWidget *, bool>(widget, command_id < 0);
         g_idle_add_full(G_PRIORITY_DEFAULT, [](gpointer data) -> gboolean {
-            auto *menu_widget = GTK_WIDGET(data);
+            auto *cleanup = static_cast<std::pair<GtkWidget *, bool> *>(data);
+            auto *menu_widget = cleanup->first;
             if (!gtk_widget_in_destruction(menu_widget)) {
                 gtk_menu_popdown(GTK_MENU(menu_widget));
+                if (cleanup->second) {
+                    // Clicking outside dismisses the popup but consumes that
+                    // click. GTK can restore focus to the CEF view afterwards;
+                    // explicitly hand keyboard focus back to Tao/Compose.
+                    GtkWidget *view = gtk_menu_get_attach_widget(GTK_MENU(menu_widget));
+                    if (view != nullptr) {
+                        GtkWidget *top = gtk_widget_get_toplevel(view);
+                        if (GTK_IS_WINDOW(top) && gtk_window_get_focus(GTK_WINDOW(top)) == view) {
+                            gtk_window_set_focus(GTK_WINDOW(top), nullptr);
+                        }
+                    }
+                }
                 gtk_widget_destroy(menu_widget);
             }
             g_object_unref(menu_widget);
+            delete cleanup;
             return G_SOURCE_REMOVE;
-        }, widget, nullptr);
+        }, cleanup, nullptr);
     }
 }
 
@@ -325,6 +358,15 @@ gboolean showGtkContextMenu(gpointer data) {
         GDK_GRAVITY_SOUTH_WEST,
         GDK_GRAVITY_NORTH_WEST,
         state->trigger_event);
+    // gtk_menu_popup_internal() returns early if its GDK seat grab fails and
+    // does not emit "deactivate". Without this check we'd retain an active
+    // menu and CEF's unmatched right-button press indefinitely.
+    if (gtk_grab_get_current() != gtk_menu) {
+        if (g_getenv("COMPOSE_CEF_DEBUG_MENU")) {
+            g_printerr("CEF context menu: GTK grab failed, cancelling\n");
+        }
+        completeContextMenu(state, -1);
+    }
     if (state->trigger_event != nullptr) gdk_event_free(state->trigger_event);
     state->trigger_event = nullptr;
     return G_SOURCE_REMOVE;

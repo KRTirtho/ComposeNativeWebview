@@ -133,9 +133,8 @@ gboolean onMotion(GtkWidget *, GdkEventMotion *event, gpointer data) {
 gboolean onButton(GtkWidget *widget, GdkEventButton *event, gpointer data) {
     auto state = *static_cast<std::shared_ptr<ComposeCefViewState> *>(data);
     if (event->type == GDK_BUTTON_RELEASE && event->button == 3) {
-        // While a GTK context menu is open for this view, the right-button
-        // release must not reach CEF (it would dismiss the menu before an
-        // item can be chosen). Swallow it.
+        // The GTK popup may grab the right-button release. Defer it until the
+        // menu closes, but never leave CEF with an unmatched button-down.
         std::lock_guard<std::mutex> lock(state->mutex);
         if (state->active_menu_widget != nullptr) return TRUE;
     }
@@ -152,7 +151,7 @@ gboolean onButton(GtkWidget *widget, GdkEventButton *event, gpointer data) {
     CefRefPtr<CefBrowser> browser = browserOf(state);
     if (browser == nullptr) return FALSE;
 
-    if (event->type == GDK_BUTTON_PRESS) {
+    if (event->type == GDK_BUTTON_PRESS && event->button != 3) {
         gtk_widget_grab_focus(widget);
         compose_cef_call_on_pointer_focus(state->handle);
     }
@@ -173,7 +172,20 @@ gboolean onButton(GtkWidget *widget, GdkEventButton *event, gpointer data) {
     }
     const bool mouse_up = event->type == GDK_BUTTON_RELEASE;
     if (!mouse_up) mouse.modifiers |= button_flag;
-    const bool grab_focus = event->type == GDK_BUTTON_PRESS;
+    if (button == MBT_RIGHT) {
+        if (mouse_up) {
+            // The popup may already have sent a synthetic release; don't send
+            // another if GTK also delivers the physical one later.
+            if (!state->right_button_pending.exchange(false)) return TRUE;
+        } else {
+            {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                state->last_context_mouse = mouse;
+            }
+            state->right_button_pending.store(true);
+        }
+    }
+    const bool grab_focus = event->type == GDK_BUTTON_PRESS && event->button != 3;
     compose_cef_post_to_ui([browser, mouse, button, mouse_up, grab_focus] {
         if (grab_focus) browser->GetHost()->SetFocus(true);
         browser->GetHost()->SendMouseClickEvent(mouse, button, mouse_up, 1);
@@ -302,12 +314,31 @@ void onOutsidePress(GtkGestureMultiPress *gesture, gint, gdouble x, gdouble y,
     GtkWidget *widget = state->widget;
     GtkWidget *top = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
     if (widget == nullptr || !GTK_IS_WINDOW(top)) return;
-    int wx = 0, wy = 0;
-    if (gtk_widget_translate_coordinates(top, widget, static_cast<int>(x),
-                                         static_cast<int>(y), &wx, &wy)) {
-        GtkAllocation rect;
-        gtk_widget_get_allocation(widget, &rect);
-        if (wx >= 0 && wy >= 0 && wx < rect.width && wy < rect.height) return;
+    // GtkOverlay gives each child its own GdkWindow. GTK's widget-coordinate
+    // translation reports (0,0) for the embed even when Nucleus positions it
+    // at (0,120) in the content area. Use the same rect that Nucleus passes to
+    // GtkOverlay::get-child-position for pointer hit testing.
+    struct NucleusRect { gint x, y, width, height, valid; };
+    const auto *rect = static_cast<const NucleusRect *>(
+        g_object_get_data(G_OBJECT(widget), "nucleus_tao_widget_rect"));
+    if (rect != nullptr && rect->valid) {
+        GtkWidget *content = gtk_bin_get_child(GTK_BIN(top));
+        int cx = static_cast<int>(x), cy = static_cast<int>(y);
+        if (content != nullptr) {
+            gtk_widget_translate_coordinates(top, content, static_cast<int>(x),
+                                             static_cast<int>(y), &cx, &cy);
+        }
+        if (cx >= rect->x && cy >= rect->y &&
+            cx < rect->x + rect->width && cy < rect->y + rect->height) return;
+    } else {
+        // Fallback for GTK hosts without Nucleus's cached overlay rectangle.
+        int wx = 0, wy = 0;
+        if (gtk_widget_translate_coordinates(top, widget, static_cast<int>(x),
+                                             static_cast<int>(y), &wx, &wy)) {
+            GtkAllocation allocation;
+            gtk_widget_get_allocation(widget, &allocation);
+            if (wx >= 0 && wy >= 0 && wx < allocation.width && wy < allocation.height) return;
+        }
     }
     // Nucleus paints Compose over the same GTK window; moving Compose focus
     // does not always change GTK's focused widget. Capture the actual GTK

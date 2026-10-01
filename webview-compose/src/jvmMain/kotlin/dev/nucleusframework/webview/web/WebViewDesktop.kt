@@ -41,7 +41,9 @@ import javax.imageio.ImageIO
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import org.jetbrains.skia.Image as SkiaImage
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -370,8 +372,15 @@ actual fun ActualWebView(
         }
         linuxCefWebView != null && LocalWebViewFactory.current == null -> {
             val focusManager = LocalFocusManager.current
-            DisposableEffect(nativeWebView, focusManager) {
-                linuxCefWebView.setOnPointerFocus { focusManager.clearFocus(force = true) }
+            DisposableEffect(nativeWebView, focusManager, scope) {
+                linuxCefWebView.setOnPointerFocus {
+                    scope.launch {
+                        // The GTK press callback is re-entrant with Tao's
+                        // pointer dispatch. Clear Compose focus afterwards.
+                        yield()
+                        focusManager.clearFocus(force = true)
+                    }
+                }
                 onDispose { linuxCefWebView.setOnPointerFocus(null) }
             }
             NativeView(
