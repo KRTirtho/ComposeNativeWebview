@@ -2,7 +2,7 @@
 androidx-activity = "1.13.0"
 mavenPublish = "0.37.0"
 # 2.11+ requires compileSdk 37 / AGP 9.x; keep 2.9.x until AGP is upgraded.
-androidx-lifecycle = "2.9.0"
+androidx-lifecycle = "2.10.0"
 androidGradlePlugin = "8.13.2"
 composeHotReload = "1.2.0"
 composeMultiplatform = "1.11.1"
@@ -10,7 +10,7 @@ google-material = "1.14.0"
 kotlin = "2.4.10"
 kotlinx-coroutines = "1.11.0"
 kotlinx-serialization = "1.11.0"
-nucleus = "2.5.5"
+nucleus = "2.5.18"
 
 [libraries]
 compose-ui-test = { module = "org.jetbrains.compose.ui:ui-test", version.ref = "composeMultiplatform" }

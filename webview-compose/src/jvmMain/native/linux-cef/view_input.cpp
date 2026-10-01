@@ -334,11 +334,8 @@ gboolean onFocusOut(GtkWidget *, GdkEventFocus *, gpointer data) {
     return FALSE;
 }
 
-void onOutsidePress(GtkGestureMultiPress *gesture, gint, gdouble x, gdouble y,
-                    gpointer data) {
-    auto *state = static_cast<ComposeCefViewState *>(data);
+void blurIfOutsideView(GtkWidget *top, gdouble x, gdouble y, ComposeCefViewState *state) {
     GtkWidget *widget = state->widget;
-    GtkWidget *top = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
     if (widget == nullptr || !GTK_IS_WINDOW(top)) return;
     // GtkOverlay gives each child its own GdkWindow. GTK's widget-coordinate
     // translation reports (0,0) for the embed even when Nucleus positions it
@@ -387,6 +384,12 @@ void onOutsidePress(GtkGestureMultiPress *gesture, gint, gdouble x, gdouble y,
     }
 }
 
+void onOutsidePress(GtkGestureMultiPress *gesture, gint, gdouble x, gdouble y,
+                    gpointer data) {
+    blurIfOutsideView(gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture)),
+                      x, y, static_cast<ComposeCefViewState *>(data));
+}
+
 void onHierarchyChanged(GtkWidget *widget, GtkWidget *, gpointer data) {
     auto *state = static_cast<ComposeCefViewState *>(data);
     if (state->outside_press_gesture != nullptr) {
@@ -404,6 +407,46 @@ void onHierarchyChanged(GtkWidget *widget, GtkWidget *, gpointer data) {
         // The connection belongs to the host window, not this view, so it
         // also covers late events after a popover/view has been destroyed.
         g_signal_connect(top, "event", G_CALLBACK(+[](GtkWidget *host, GdkEvent *event, gpointer) -> gboolean {
+            if (event->type == GDK_BUTTON_PRESS && event->any.window == gtk_widget_get_window(host)) {
+                GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(host));
+                auto *input = focus != nullptr
+                    ? static_cast<std::shared_ptr<ComposeCefViewState> *>(
+                        g_object_get_data(G_OBJECT(focus), "compose-cef-input-state"))
+                    : nullptr;
+                if (input != nullptr) {
+                    bool can_blur = false;
+                    {
+                        std::lock_guard<std::mutex> lock((*input)->mutex);
+                        can_blur = !(*input)->closing && (*input)->active_menu_widget == nullptr;
+                    }
+                    // Tao may consume a toplevel press during GTK's WM-event
+                    // precheck, before capture-phase gestures see it. Update
+                    // native focus here as well, but let the actual press
+                    // continue to Compose for normal hit testing.
+                    if (can_blur) blurIfOutsideView(host, event->button.x, event->button.y, input->get());
+                }
+            }
+            if (event->type == GDK_KEY_PRESS || event->type == GDK_KEY_RELEASE) {
+                GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(host));
+                auto *input = focus != nullptr
+                    ? static_cast<std::shared_ptr<ComposeCefViewState> *>(
+                        g_object_get_data(G_OBJECT(focus), "compose-cef-input-state"))
+                    : nullptr;
+                if (input != nullptr) {
+                    {
+                        std::lock_guard<std::mutex> lock((*input)->mutex);
+                        if ((*input)->closing || (*input)->active_menu_widget != nullptr) return FALSE;
+                    }
+                    // Nucleus 2.5.18 filters keys through Tao's Compose IME
+                    // in GtkWindow::key-press-event, before GTK's class
+                    // handler propagates them to the focused native widget.
+                    // Route native CEF focus at the generic event boundary,
+                    // before that filter can consume text or leak shortcuts
+                    // into Compose. Popovers and Compose retain normal GTK
+                    // key routing when their widgets own keyboard focus.
+                    return onKey(focus, &event->key, input);
+                }
+            }
             if ((event->type == GDK_CONFIGURE || event->type == GDK_FOCUS_CHANGE) &&
                 event->any.window != gtk_widget_get_window(host)) {
                 return TRUE;
