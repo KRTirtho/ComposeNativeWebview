@@ -2,7 +2,8 @@
 # Builds the direct-CEF Linux backend for webview-compose.
 #
 # Downloads the official CEF binary SDK at build time (~292 MiB compressed),
-# builds libcompose_cef_linux.so + cef_subprocess, and stages the full CEF
+# builds the GTK/IPC libcompose_cef_linux.so + cef_subprocess browser host and
+# renderer executable, and stages the full CEF
 # runtime into src/jvmMain/resources/nucleus/native/linux-<arch>/ so it is
 # packaged into the library jar (loaded at runtime by CefLinuxBridge via
 # NativeLibraryLoader).

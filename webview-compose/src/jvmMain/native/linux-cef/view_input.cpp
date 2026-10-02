@@ -1,6 +1,4 @@
-#include "compose_cef_internal.h"
-
-#include "include/wrapper/cef_helpers.h"
+#include "cef_host_internal.h"
 
 /* GTK signal handlers forwarding mouse / keyboard / scroll / focus to CEF.
  * All run on the GTK main thread; CEF ops are posted to TID_UI. */
@@ -98,14 +96,14 @@ int cefWindowsKeyCodeFromGdk(guint keyval) {
     }
 }
 
-CefRefPtr<CefBrowser> browserOf(const std::shared_ptr<ComposeCefViewState> &state) {
+ComposeCefBrowserRef browserOf(const std::shared_ptr<ComposeCefViewState> &state) {
     std::lock_guard<std::mutex> lock(state->mutex);
     return state->browser;
 }
 
 gboolean onMotion(GtkWidget *, GdkEventMotion *event, gpointer data) {
     auto state = *static_cast<std::shared_ptr<ComposeCefViewState> *>(data);
-    CefRefPtr<CefBrowser> browser = browserOf(state);
+    ComposeCefBrowserRef browser = browserOf(state);
     if (browser == nullptr) return FALSE;
     CefMouseEvent mouse;
     mouse.x = static_cast<int>(event->x);
@@ -162,7 +160,7 @@ gboolean onButton(GtkWidget *widget, GdkEventButton *event, gpointer data) {
                 }), state.get());
         }
     }
-    CefRefPtr<CefBrowser> browser = browserOf(state);
+    ComposeCefBrowserRef browser = browserOf(state);
     if (browser == nullptr) return FALSE;
 
     if (event->type == GDK_BUTTON_PRESS) {
@@ -209,7 +207,7 @@ gboolean onButton(GtkWidget *widget, GdkEventButton *event, gpointer data) {
 
 gboolean onScroll(GtkWidget *, GdkEventScroll *event, gpointer data) {
     auto state = *static_cast<std::shared_ptr<ComposeCefViewState> *>(data);
-    CefRefPtr<CefBrowser> browser = browserOf(state);
+    ComposeCefBrowserRef browser = browserOf(state);
     if (browser == nullptr) return FALSE;
     double delta_x = 0.0;
     double delta_y = 0.0;
@@ -239,7 +237,7 @@ gboolean onScroll(GtkWidget *, GdkEventScroll *event, gpointer data) {
 
 gboolean onKey(GtkWidget *, GdkEventKey *event, gpointer data) {
     auto state = *static_cast<std::shared_ptr<ComposeCefViewState> *>(data);
-    CefRefPtr<CefBrowser> browser = browserOf(state);
+    ComposeCefBrowserRef browser = browserOf(state);
     if (browser == nullptr) return FALSE;
     const bool control = (event->state & GDK_CONTROL_MASK) != 0;
     const bool other_modifier = (event->state & (GDK_MOD1_MASK | GDK_META_MASK)) != 0;
@@ -257,7 +255,7 @@ gboolean onKey(GtkWidget *, GdkEventKey *event, gpointer data) {
                     compose_cef_paste_system_clipboard(browser);
                 } else {
                     compose_cef_post_to_ui([state, browser, keyval, shift] {
-                        CefRefPtr<CefFrame> frame = browser->GetFocusedFrame();
+                        ComposeCefFrameRef frame = browser->GetFocusedFrame();
                         if (frame == nullptr) frame = browser->GetMainFrame();
                         if (frame == nullptr) return;
                         switch (keyval) {
@@ -311,7 +309,7 @@ gboolean onFocusIn(GtkWidget *, GdkEventFocus *, gpointer data) {
         std::lock_guard<std::mutex> lock(state->mutex);
         if (state->active_menu_widget != nullptr) return FALSE;
     }
-    CefRefPtr<CefBrowser> browser = browserOf(state);
+    ComposeCefBrowserRef browser = browserOf(state);
     if (browser.get() != nullptr) {
         compose_cef_post_to_ui([browser] { browser->GetHost()->SetFocus(true); });
     }
@@ -327,7 +325,7 @@ gboolean onFocusOut(GtkWidget *, GdkEventFocus *, gpointer data) {
         // pending context menu before the user can choose an action.
         if (state->active_menu_widget != nullptr) return FALSE;
     }
-    CefRefPtr<CefBrowser> browser = browserOf(state);
+    ComposeCefBrowserRef browser = browserOf(state);
     if (browser.get() != nullptr) {
         compose_cef_post_to_ui([browser] { browser->GetHost()->SetFocus(false); });
     }
@@ -374,7 +372,7 @@ void blurIfOutsideView(GtkWidget *top, gdouble x, gdouble y, ComposeCefViewState
         if (event != nullptr) gdk_event_free(event);
     }
     if (gtk_widget_has_focus(widget)) gtk_window_set_focus(GTK_WINDOW(top), nullptr);
-    CefRefPtr<CefBrowser> browser;
+    ComposeCefBrowserRef browser;
     {
         std::lock_guard<std::mutex> lock(state->mutex);
         browser = state->browser;

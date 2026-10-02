@@ -8,8 +8,10 @@
   - Platform actuals: `.../src/jvmMain/` (desktop: Linux WebKit2GTK + Linux direct-CEF + macOS WKWebView + Windows WebView2),
     `.../src/androidMain/` (Android WebView),
     `.../src/iosMain/` (WKWebView + cinterop in `.../src/nativeInterop/`), `.../src/wasmJsMain/` (IFrame).
-  - Linux CEF backend sources: `src/jvmMain/native/linux-cef/` (windowless Chromium + GTK OSR,
-    native GTK context menu of Chromium essentials). Selected via
+  - Linux CEF backend sources: `src/jvmMain/native/linux-cef/` (`host_*` GTK/JNI/IPC adapter
+    in the JVM; `cef_worker.cpp` browser host and `cef_subprocess.cpp` renderer in a separate
+    executable; windowless BGRA rendering and native GTK context menu). Hosts shut down and
+    are reaped when their last view closes; reopening starts a fresh process. Selected via
     `DesktopWebSettings.linuxBackend` (`LinuxWebBackend.CEF` default, `WEBKIT` fallback).
   - Unit tests: `src/commonTest/` (JVM / Android host / iOS simulator / Wasm browser).
 - `e2e-shared/`: **shared multiplatform visual e2e suite** (`visualsuite/*` in `commonMain`) —

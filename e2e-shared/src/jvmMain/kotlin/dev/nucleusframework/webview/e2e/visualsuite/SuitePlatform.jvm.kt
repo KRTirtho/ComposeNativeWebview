@@ -14,6 +14,16 @@ import java.io.File
 import java.util.Locale
 import kotlinx.coroutines.delay
 
+actual fun activeCefHostProcesses(): Set<Long>? {
+    if (!System.getProperty("os.name").startsWith("Linux") ||
+        System.getProperty("e2e.linux.backend") == "webkit") return null
+    return ProcessHandle.current().descendants().use { processes ->
+        processes.filter {
+            it.info().commandLine().orElse("").contains("--compose-cef-host-fd=3")
+        }.map { it.pid() }.toList().toSet()
+    }
+}
+
 actual fun suiteCapabilities(): Set<SuiteCapability> =
     setOf(
         SuiteCapability.HistoryNavigation,

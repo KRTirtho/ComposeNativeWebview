@@ -138,6 +138,7 @@
     {
       "type": "dev.nucleusframework.webview.web.linux.CefLinuxBridge",
       "methods": [
+        { "name": "nativeOnPointerFocus", "parameterTypes": ["long"] },
         { "name": "nativeOnNavigate", "parameterTypes": ["long", "java.lang.String"] },
         { "name": "nativeOnIpcMessage", "parameterTypes": ["long", "java.lang.String"] },
         { "name": "nativeOnJsResult", "parameterTypes": ["long", "java.lang.String"] },

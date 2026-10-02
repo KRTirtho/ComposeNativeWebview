@@ -14,6 +14,8 @@ import platform.Foundation.NSUTF8StringEncoding
 import platform.Foundation.timeIntervalSince1970
 import platform.posix.mkdir
 
+actual fun activeCefHostProcesses(): Set<Long>? = null
+
 actual fun suiteCapabilities(): Set<SuiteCapability> =
     setOf(
         SuiteCapability.HistoryNavigation,

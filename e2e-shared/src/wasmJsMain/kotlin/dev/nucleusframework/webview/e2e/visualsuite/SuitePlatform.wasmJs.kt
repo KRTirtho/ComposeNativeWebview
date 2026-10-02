@@ -5,6 +5,8 @@ import dev.nucleusframework.webview.web.IWebView
 import dev.nucleusframework.webview.web.WebViewState
 import kotlinx.browser.window
 
+actual fun activeCefHostProcesses(): Set<Long>? = null
+
 actual fun suiteCapabilities(): Set<SuiteCapability> =
     // Wasm IFrame limits: no history, no data: JS access, host-only cookies,
     // screenshot needs optional html2canvas (not bundled).

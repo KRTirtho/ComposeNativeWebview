@@ -31,19 +31,17 @@ endif()
 
 add_library(compose_cef_linux SHARED
     jni_bridge.cpp
-    cef_app.cpp
-    view_lifecycle.cpp
-    view_signals.cpp
+    host_process.cpp
+    host_lifecycle.cpp
+    host_bridge.cpp
     view_render.cpp
     view_input.cpp
-    context_menu.cpp
+    host_context_menu.cpp
     clipboard.cpp
-    navigation.cpp
-    javascript.cpp
-    cookies.cpp
     screenshot.cpp
 )
 SET_LIBRARY_TARGET_PROPERTIES(compose_cef_linux)
+target_compile_options(compose_cef_linux PRIVATE -fexceptions)
 set_target_properties(compose_cef_linux PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CEF_OUTPUT_DIR}"
     BUILD_RPATH "$ORIGIN"
@@ -55,15 +53,13 @@ target_include_directories(compose_cef_linux PRIVATE
     "${CEF_ROOT}"
 )
 target_link_libraries(compose_cef_linux PRIVATE
-    libcef_dll_wrapper
-    cef_lib
-    ${CEF_STANDARD_LIBS}
     PkgConfig::GTK3
 )
 set_target_properties(compose_cef_linux PROPERTIES OUTPUT_NAME compose_cef_linux)
 
-add_executable(cef_subprocess cef_subprocess.cpp)
+add_executable(cef_subprocess cef_subprocess.cpp cef_worker.cpp)
 SET_EXECUTABLE_TARGET_PROPERTIES(cef_subprocess)
+target_compile_options(cef_subprocess PRIVATE -fexceptions)
 set_target_properties(cef_subprocess PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CEF_OUTPUT_DIR}"
     BUILD_RPATH "$ORIGIN"
@@ -74,4 +70,5 @@ target_link_libraries(cef_subprocess PRIVATE
     libcef_dll_wrapper
     cef_lib
     ${CEF_STANDARD_LIBS}
+    PkgConfig::GTK3
 )

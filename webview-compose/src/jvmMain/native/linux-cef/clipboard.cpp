@@ -1,4 +1,4 @@
-#include "compose_cef_internal.h"
+#include "cef_host_internal.h"
 
 #include <cstring>
 
@@ -7,29 +7,18 @@ namespace {
 constexpr char kClipboardPrefix[] = "__compose_cef_system_clipboard:";
 
 struct PasteRequest {
-    CefRefPtr<CefBrowser> browser;
+    ComposeCefBrowserRef browser;
 };
-
-void setSystemClipboard(const std::string &text) {
-    auto *payload = new std::string(text);
-    g_idle_add_full(G_PRIORITY_DEFAULT, [](gpointer data) -> gboolean {
-        const auto &value = *static_cast<std::string *>(data);
-        gtk_clipboard_set_text(gtk_clipboard_get(GDK_SELECTION_CLIPBOARD),
-                               value.c_str(), static_cast<gint>(value.size()));
-        return G_SOURCE_REMOVE;
-    }, payload, [](gpointer data) { delete static_cast<std::string *>(data); });
-}
 
 }  // namespace
 
 void compose_cef_copy_selection(const std::shared_ptr<ComposeCefViewState> &state,
-                                CefRefPtr<CefBrowser> browser,
-                                CefRefPtr<CefFrame> frame, bool cut) {
+                                ComposeCefBrowserRef browser,
+                                ComposeCefFrameRef frame, bool cut) {
     if (browser == nullptr) return;
     if (frame == nullptr) frame = browser->GetFocusedFrame();
     if (frame == nullptr) frame = browser->GetMainFrame();
     if (frame == nullptr) return;
-    state->clipboard_copies_pending.fetch_add(1);
     // In OSR, CefFrame::Copy() writes Chromium's private clipboard. Nucleus
     // Compose uses GTK's system clipboard. Extract the focused DOM selection
     // before editing and send it through the existing console-message channel.
@@ -45,28 +34,7 @@ void compose_cef_copy_selection(const std::shared_ptr<ComposeCefViewState> &stat
     frame->ExecuteJavaScript(script, frame->GetURL(), 0);
 }
 
-bool compose_cef_handle_clipboard_console(const std::shared_ptr<ComposeCefViewState> &state,
-                                          const std::string &message) {
-    if (message.compare(0, sizeof(kClipboardPrefix) - 1, kClipboardPrefix) != 0) return false;
-    int pending = state->clipboard_copies_pending.load();
-    while (pending > 0 && !state->clipboard_copies_pending.compare_exchange_weak(pending, pending - 1)) {}
-    if (pending <= 0) return true;
-    const std::string encoded = message.substr(sizeof(kClipboardPrefix) - 1);
-    gsize size = 0;
-    guchar *bytes = g_base64_decode(encoded.c_str(), &size);
-    if (bytes != nullptr) {
-        if (g_getenv("COMPOSE_CEF_DEBUG_INPUT")) {
-            g_printerr("CEF system clipboard copy: %zu bytes selected\n", size);
-        }
-        if (size != 0 && g_utf8_validate(reinterpret_cast<const char *>(bytes), size, nullptr)) {
-            setSystemClipboard(std::string(reinterpret_cast<const char *>(bytes), size));
-        }
-        g_free(bytes);
-    }
-    return true;
-}
-
-void compose_cef_paste_system_clipboard(CefRefPtr<CefBrowser> browser) {
+void compose_cef_paste_system_clipboard(ComposeCefBrowserRef browser) {
     if (browser == nullptr) return;
     auto *request = new PasteRequest{browser};
     // This function is also used by CEF's menu callback (TID_UI). GTK's
@@ -76,7 +44,7 @@ void compose_cef_paste_system_clipboard(CefRefPtr<CefBrowser> browser) {
             gtk_clipboard_get(GDK_SELECTION_CLIPBOARD),
             [](GtkClipboard *, const gchar *text, gpointer data) {
                 auto *request = static_cast<PasteRequest *>(data);
-                CefRefPtr<CefBrowser> browser = request->browser;
+                ComposeCefBrowserRef browser = request->browser;
                 if (g_getenv("COMPOSE_CEF_DEBUG_INPUT")) {
                     g_printerr("CEF system clipboard paste: %zu bytes read\n",
                                text == nullptr ? 0 : std::strlen(text));
@@ -92,7 +60,7 @@ void compose_cef_paste_system_clipboard(CefRefPtr<CefBrowser> browser) {
                     g_free(encoded);
                     g_free(utf8);
                     compose_cef_post_to_ui([browser, script] {
-                        CefRefPtr<CefFrame> frame = browser->GetFocusedFrame();
+                        ComposeCefFrameRef frame = browser->GetFocusedFrame();
                         if (frame == nullptr) frame = browser->GetMainFrame();
                         if (frame != nullptr) frame->ExecuteJavaScript(script, frame->GetURL(), 0);
                     });

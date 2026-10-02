@@ -96,7 +96,7 @@ class LinuxCefNativeWebView(
             }
         }
 
-    override fun isReady(): Boolean = !released && handle != 0L
+    override fun isReady(): Boolean = !released && handle != 0L && CefLinuxBridge.nativeIsReady(handle)
 
     override fun isLoading(): Boolean =
         if (!isReady()) false else CefLinuxBridge.nativeIsLoading(handle)

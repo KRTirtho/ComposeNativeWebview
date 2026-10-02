@@ -1,4 +1,4 @@
-#include "compose_cef_internal.h"
+#include "cef_host_internal.h"
 
 /* Screenshot: encode the latest OSR frame (BGRA) to PNG via cairo. */
 

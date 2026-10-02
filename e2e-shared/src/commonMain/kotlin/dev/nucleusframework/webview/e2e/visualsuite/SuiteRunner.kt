@@ -717,6 +717,24 @@ internal suspend fun runFullSuite(
         assertThat(r.contains("2"), "API dead after headers path: $r")
     }
 
+    case("L10") {
+        // Unlike L08, no main browser stays alive while another is destroyed.
+        // This exercises the same last-view close/reopen path as navigation
+        // out of WebViewScreen and back into it in a real application.
+        repeat(3) { index ->
+            val before = activeCefHostProcesses()
+            ctx.remountWebView(ctx)
+            before?.let {
+                val after = activeCefHostProcesses().orEmpty()
+                assertThat(after.isNotEmpty(), "CEF host missing after reopen $index")
+                assertThat(after.intersect(it).isEmpty(), "CEF host was retained across close/reopen $index")
+            }
+            loadHtmlAwaitMarker(ctx.navigator, "main-reopened-$index")
+            val result = evalJs(ctx.navigator, "1+1")
+            assertThat(result.contains("2"), "API dead after reopen $index: $result")
+        }
+    }
+
     // ── Rendering ────────────────────────────────────────────────────
     // The WebView is a real native view (no offscreen rendering, no frame
     // pacing in this library), so these publish what the host reaches — a

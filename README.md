@@ -37,7 +37,7 @@ If you already know **compose-webview-multiplatform**, you already know how to u
 
 * Multiplatform packaging under NucleusFramework (`dev.nucleusframework`)
 * **WasmJs** target via **IFrame**
-* Desktop (JVM) via **Nucleus Tao + NativeView** (Linux WebKit2GTK; macOS WKWebView; Windows WebView2)
+* Desktop (JVM) via **Nucleus Tao + NativeView** (Linux CEF / WebKit2GTK; macOS WKWebView; Windows WebView2)
 
 ---
 
@@ -47,7 +47,7 @@ If you already know **compose-webview-multiplatform**, you already know how to u
 - **iOS**: `WKWebView`
 - **WasmJs**: `org.w3c.dom.HTMLIFrameElement`
 - **Desktop**: Nucleus Tao `NativeView` (requires `nucleusApplication` / Tao backend).
-  - **Linux**: WebKit2GTK (`libcompose_webview_linux.so`)
+  - **Linux**: CEF by default (`libcompose_cef_linux.so` GTK/IPC bridge + `cef_subprocess` host), or WebKit2GTK (`libcompose_webview_linux.so`) via `LinuxWebBackend.WEBKIT`.
   - **Windows**: WebView2 CompositionController + DirectComposition (`compose_webview_windows.dll`; needs WebView2 Runtime / Edge)
   - **macOS**: WKWebView (`libcompose_webview_macos.dylib`)
 
@@ -55,22 +55,41 @@ If you already know **compose-webview-multiplatform**, you already know how to u
 
 ## Rendering model & frame rate
 
-The desktop backend embeds a **real native view** — it does **not** render the page
-offscreen into a bitmap and blit it into the Compose scene:
+The desktop backend embeds a **real native view** rather than drawing the page in
+the Compose scene. Linux CEF uses windowless rendering into a native GTK drawing
+area; the other backends embed their platform renderer directly:
 
 - **macOS**: the `WKWebView` `NSView` is a subview of the Tao window, below the Compose
   Metal layer; Compose punches a transparent hole over the WebView rect.
-- **Linux**: the WebKit2GTK widget is reparented into Tao's content widget.
+- **Linux CEF**: Chromium runs outside the JVM in a native host process. Its BGRA
+  frames travel over a private Unix socket to the GTK drawing area in Tao's
+  `NativeView`; input, navigation, JS, and cookie operations use the same IPC.
+- **Linux WebKit**: the WebKit2GTK widget is reparented into Tao's content widget.
 - **Windows**: WebView2 runs as a DirectComposition visual composited by DWM.
 
 Consequences:
 
-- There is **no frame pacing, throttling or `max_fps` knob** in this library — none of
-  the backends contain frame-rate logic. The page paints at whatever rate the platform
-  compositor gives it, which is normally the **display refresh rate**.
+- The platform renderers follow their compositor's refresh rate. Linux CEF's
+  windowless browser currently uses a 60 fps paint rate; its frames still do not
+  pass through Compose.
 - The WebView's own frames do not go through Compose. Compose renders its overlay in
   the same window, so a heavy Compose UI shares the GPU with the page, but it never
   gates the WebView's frames.
+
+### Linux CEF process lifecycle
+
+The JVM-side bridge does **not** link or initialize `libcef`. A host is started
+when a WebView is created, and views using the same profile share that host.
+Closing a view closes its browser. Closing the **last** view shuts down CEF in
+the host, waits for the process to exit, and releases the GTK view. Reopening
+launches a fresh host, so no idle Chromium engine is kept alive and CEF is never
+reinitialized inside the application's JVM. Persistent profiles/cookies stay on
+disk; incognito views use separate in-memory request contexts.
+
+`cef_subprocess` is the bundled executable for both the browser host and its
+renderer/utility children. No new system package or public Kotlin API is needed.
+Desktop visual case `L10` verifies that host processes disappear during the
+empty-screen interval and that reopening uses new process IDs.
 
 ### Measure it on your hardware
 

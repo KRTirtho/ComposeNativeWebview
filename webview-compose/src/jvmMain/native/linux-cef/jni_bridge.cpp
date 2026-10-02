@@ -1,4 +1,4 @@
-#include "compose_cef_internal.h"
+#include "cef_host_internal.h"
 
 namespace {
 
@@ -23,7 +23,9 @@ JNIEnv *compose_cef_get_env() {
     JNIEnv *env = nullptr;
     jint status = g_jvm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_8);
     if (status == JNI_EDETACHED) {
-        if (g_jvm->AttachCurrentThread(reinterpret_cast<void **>(&env), nullptr) != 0) {
+        // CEF's native threads live with the process, not a screen. Their JNI
+        // callbacks must not keep the JVM alive after the application exits.
+        if (g_jvm->AttachCurrentThreadAsDaemon(reinterpret_cast<void **>(&env), nullptr) != 0) {
             return nullptr;
         }
     } else if (status != JNI_OK) {

@@ -39,17 +39,15 @@ import androidx.compose.ui.unit.sp
 import dev.nucleusframework.webview.jsbridge.IJsMessageHandler
 import dev.nucleusframework.webview.jsbridge.JsMessage
 import dev.nucleusframework.webview.jsbridge.WebViewJsBridge
-import dev.nucleusframework.webview.jsbridge.rememberWebViewJsBridge
 import dev.nucleusframework.webview.request.RequestInterceptor
 import dev.nucleusframework.webview.request.WebRequest
 import dev.nucleusframework.webview.request.WebRequestInterceptResult
+import dev.nucleusframework.webview.web.WebContent
 import dev.nucleusframework.webview.web.WebView
 import dev.nucleusframework.webview.web.WebViewNavigator
 import dev.nucleusframework.webview.web.WebViewState
 import dev.nucleusframework.webview.e2e.currentTimeMillis
 import dev.nucleusframework.webview.e2e.hostFromUrl
-import dev.nucleusframework.webview.web.rememberWebViewNavigator
-import dev.nucleusframework.webview.web.rememberWebViewStateWithHTMLData
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -57,6 +55,17 @@ private val Bg = Color(0xFF0B1220)
 private val Card = Color(0xFF121A2B)
 private val TextMain = Color(0xFFE8EEF9)
 private val TextDim = Color(0xFF93A0B8)
+
+private fun createSuiteWebViewState(): WebViewState =
+    WebViewState(WebContent.Data(pageWithMarker("boot"), baseUrl = "https://suite.local/boot")).apply {
+        webSettings.desktopWebSettings.transparent = false
+        webSettings.backgroundColor = Color.White
+        webSettings.isJavaScriptEnabled = true
+        if (System.getProperty("e2e.linux.backend") == "webkit") {
+            webSettings.desktopWebSettings.linuxBackend =
+                dev.nucleusframework.webview.setting.LinuxWebBackend.WEBKIT
+        }
+    }
 
 /**
  * Full multiplatform visual e2e suite against a **real** platform WebView.
@@ -101,21 +110,9 @@ fun VisualSuiteApp(
             }
         }
 
-    val navigator = rememberWebViewNavigator(coroutineScope = scope, requestInterceptor = interceptor)
-    val state =
-        rememberWebViewStateWithHTMLData(
-            data = pageWithMarker("boot"),
-            baseUrl = "https://suite.local/boot",
-        ).also {
-            it.webSettings.desktopWebSettings.transparent = false
-            it.webSettings.backgroundColor = Color.White
-            it.webSettings.isJavaScriptEnabled = true
-            if (System.getProperty("e2e.linux.backend") == "webkit") {
-                it.webSettings.desktopWebSettings.linuxBackend =
-                    dev.nucleusframework.webview.setting.LinuxWebBackend.WEBKIT
-            }
-        }
-    val jsBridge = rememberWebViewJsBridge(navigator)
+    var navigator by remember { mutableStateOf(WebViewNavigator(scope, interceptor)) }
+    var state by remember { mutableStateOf(createSuiteWebViewState()) }
+    var jsBridge by remember { mutableStateOf(WebViewJsBridge(navigator)) }
 
     // Bridge hit counters / last payloads for assertions
     val bridgeHits = remember { mutableStateListOf<String>() }
@@ -123,6 +120,8 @@ fun VisualSuiteApp(
     var lastPingCallbackAck by remember { mutableStateOf<String?>(null) }
     var secondaryHits by remember { mutableStateOf(0) }
     var onCreatedFired by remember { mutableStateOf(false) }
+    var webViewMounted by remember { mutableStateOf(true) }
+    var webViewDisposals by remember { mutableStateOf(0) }
 
     DisposableEffect(jsBridge) {
         val ping =
@@ -192,6 +191,38 @@ fun VisualSuiteApp(
                 setRejectHosts = { rejectHosts = it },
                 setModifyMap = { modifyMap = it },
                 getOnCreatedFired = { onCreatedFired },
+                remountWebView = { context ->
+                    val before = webViewDisposals
+                    onCreatedFired = false
+                    webViewMounted = false
+                    awaitUntil(12_000, "main WebView disposal") { webViewDisposals > before }
+                    // Leave a real empty-screen interval so native teardown,
+                    // including deferred GTK detach cleanup, can finish.
+                    delay(200)
+                    activeCefHostProcesses()?.let {
+                        awaitUntil(5_000, "CEF host process exit") {
+                            activeCefHostProcesses().orEmpty().isEmpty()
+                        }
+                    }
+                    // Navigation into a new screen constructs a fresh state;
+                    // do not replay the previous browser's Finished/URL state
+                    // into the new browser while it is still being created.
+                    state = createSuiteWebViewState()
+                    // A new screen also has a new navigator/bridge. In
+                    // particular, don't replay the old navigator's last JS
+                    // evaluation into a browser that is still being created.
+                    navigator = WebViewNavigator(scope, interceptor)
+                    jsBridge = WebViewJsBridge(navigator)
+                    context.state = state
+                    context.navigator = navigator
+                    context.jsBridge = jsBridge
+                    webViewMounted = true
+                    awaitUntil(12_000, "main WebView recreation") { onCreatedFired }
+                    waitWebView(state)
+                    // Match the suite's initial document startup interval:
+                    // native construction can precede browser/frame creation.
+                    delay(700)
+                },
                 parentHandle = parentHandle,
             )
         val started = currentTimeMillis()
@@ -271,13 +302,16 @@ fun VisualSuiteApp(
                 .border(1.dp, Color(0xFF243049), RoundedCornerShape(12.dp))
                 .background(Color.White),
         ) {
-            WebView(
-                state = state,
-                navigator = navigator,
-                webViewJsBridge = jsBridge,
-                modifier = Modifier.fillMaxSize(),
-                onCreated = { onCreatedFired = true },
-            )
+            if (webViewMounted) {
+                WebView(
+                    state = state,
+                    navigator = navigator,
+                    webViewJsBridge = jsBridge,
+                    modifier = Modifier.fillMaxSize(),
+                    onCreated = { onCreatedFired = true },
+                    onDispose = { webViewDisposals++ },
+                )
+            }
         }
 
         // Checklist pane
@@ -368,9 +402,9 @@ fun VisualSuiteApp(
 }
 
 internal data class SuiteContext(
-    val state: WebViewState,
-    val navigator: WebViewNavigator,
-    val jsBridge: WebViewJsBridge,
+    var state: WebViewState,
+    var navigator: WebViewNavigator,
+    var jsBridge: WebViewJsBridge,
     val bridgeHits: MutableList<String>,
     val getLastPingPayload: () -> String?,
     val getLastPingCallbackAck: () -> String?,
@@ -379,6 +413,7 @@ internal data class SuiteContext(
     val setRejectHosts: (Set<String>) -> Unit,
     val setModifyMap: (Map<String, String>) -> Unit,
     val getOnCreatedFired: () -> Boolean,
+    val remountWebView: suspend (SuiteContext) -> Unit,
     /** Tao HWND for isolated Windows WebView2 instances (0 elsewhere). */
     val parentHandle: Long = 0L,
 )

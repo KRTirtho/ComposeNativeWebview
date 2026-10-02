@@ -106,6 +106,9 @@ interface IsolatedNativeWebView {
     fun destroy()
 }
 
+/** Native CEF host processes owned by this app; null on other backends. */
+expect fun activeCefHostProcesses(): Set<Long>?
+
 /** Decode screenshot bytes into width/height + RGB samples when supported. */
 expect suspend fun decodeScreenshotPixels(webView: IWebView?): ScreenshotPixels?
 

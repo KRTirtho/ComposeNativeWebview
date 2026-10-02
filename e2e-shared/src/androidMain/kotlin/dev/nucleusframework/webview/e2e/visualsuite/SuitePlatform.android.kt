@@ -6,6 +6,8 @@ import dev.nucleusframework.webview.web.IWebView
 import dev.nucleusframework.webview.web.WebViewState
 import java.io.File
 
+actual fun activeCefHostProcesses(): Set<Long>? = null
+
 actual fun suiteCapabilities(): Set<SuiteCapability> =
     setOf(
         SuiteCapability.HistoryNavigation,

@@ -5,6 +5,8 @@
 
 #include <unordered_map>
 
+int compose_cef_worker_main(int fd, const std::string &runtime, const std::string &cache);
+
 /* CEF subprocess (renderer / GPU / utility processes). Hosts the renderer-side
  * message router that injects window.cefQuery into every frame and forwards
  * page queries to the browser process. */
@@ -93,6 +95,9 @@ private:
 }  // namespace
 
 int main(int argc, char *argv[]) {
+    if (argc == 4 && std::string(argv[1]) == "--compose-cef-host-fd=3") {
+        return compose_cef_worker_main(3, argv[2], argv[3]);
+    }
     CefMainArgs main_args(argc, argv);
     CefRefPtr<CefApp> app = new ComposeCefRenderApp();
     return CefExecuteProcess(main_args, app, nullptr);

@@ -7,10 +7,11 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CompletableDeferred
 
 /**
- * JNI bridge to the direct-CEF C++ backend (`libcompose_cef_linux.so`).
+ * JNI bridge to the GTK/IPC C++ backend (`libcompose_cef_linux.so`). Chromium
+ * runs in a separate `cef_subprocess` host; the JVM never initializes CEF.
  *
  * Loaded only on Linux when the CEF runtime is bundled under
- * `nucleus/native/linux-<arch>/cef/` in the jar. All native calls that touch
+ * `nucleus/native/linux-<arch>/` in the jar. All native calls that touch
  * GTK must run on the GTK main thread (Tao application thread), mirroring
  * the WebKit backend.
  *
@@ -192,7 +193,9 @@ internal object CefLinuxBridge {
     // ── Native methods ────────────────────────────────────────────────
 
     /**
-     * Initializes CEF (once per process) and creates a browser instance.
+     * Acquires a CEF host process and creates a browser instance. The host is
+     * shut down and reaped when its last view is released; reopen starts a new
+     * process rather than attempting to restart Chromium inside the JVM.
      * Returns an opaque handle, or 0 on failure.
      *
      * [runtimeDir] must be the directory containing libcef.so, cef_subprocess,
@@ -220,6 +223,9 @@ internal object CefLinuxBridge {
 
     @JvmStatic
     external fun nativeGetGtkWidget(handle: Long): Long
+
+    @JvmStatic
+    external fun nativeIsReady(handle: Long): Boolean
 
     @JvmStatic
     external fun nativeRelease(handle: Long)
