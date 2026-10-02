@@ -108,22 +108,6 @@ Java_dev_nucleusframework_webview_web_linux_WebKitLinuxBridge_nativeCreate(
         }
     }
 
-    /*
-     * Opaque mode: force a solid page background. Many pages (and about:blank)
-     * leave html/body transparent; without this the Compose clear-through
-     * NativeView hole shows UI underneath the WebView.
-     */
-    if (!transparent) {
-        WebKitUserStyleSheet *sheet = webkit_user_style_sheet_new(
-            "html, body { background-color: #ffffff !important; }",
-            WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
-            WEBKIT_USER_STYLE_LEVEL_USER,
-            NULL,
-            NULL);
-        webkit_user_content_manager_add_style_sheet(state->ucm, sheet);
-        webkit_user_style_sheet_unref(sheet);
-    }
-
     if (init_script != NULL) {
         const char *src = (*env)->GetStringUTFChars(env, init_script, NULL);
         if (src != NULL && src[0] != '\0') {
@@ -189,11 +173,16 @@ Java_dev_nucleusframework_webview_web_linux_WebKitLinuxBridge_nativeCreate(
 
     g_object_set_data(G_OBJECT(state->web_view), "compose-webview-state", state);
 
+    // Keep WebKit's default context-menu flow. Its GTK proxy binds each stock
+    // GAction to the active WebPageProxy while populating the native menu; a
+    // handler that takes over the menu before that point leaves those actions
+    // without a page and they silently do nothing.
     state->decide_policy_handler = g_signal_connect(
         state->web_view,
         "decide-policy",
         G_CALLBACK(compose_webview_on_decide_policy),
         state);
+    compose_webview_connect_input_routing(state);
 
     return (jlong) (uintptr_t) state;
 }
@@ -217,6 +206,7 @@ Java_dev_nucleusframework_webview_web_linux_WebKitLinuxBridge_nativeRelease(
     if (state == NULL) return;
 
     if (state->web_view != NULL) {
+        compose_webview_disconnect_input_routing(state);
         if (state->decide_policy_handler != 0) {
             g_signal_handler_disconnect(state->web_view, state->decide_policy_handler);
             state->decide_policy_handler = 0;
@@ -239,4 +229,3 @@ Java_dev_nucleusframework_webview_web_linux_WebKitLinuxBridge_nativeRelease(
     }
     g_free(state);
 }
-

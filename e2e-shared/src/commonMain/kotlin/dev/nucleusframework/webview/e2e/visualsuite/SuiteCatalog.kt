@@ -21,6 +21,7 @@ internal fun suiteCatalog(): List<SuiteCase> =
         SuiteCase("C09", "Content", "state.content mutation loads new document"),
         SuiteCase("C10", "Content", "loadUrl normalizes trailing slash domain"),
         SuiteCase("C11", "Content", "loadHtml then loadUrl(data:) switches document"),
+        SuiteCase("C12", "Content", "opaque WebView preserves page dark background"),
         // Navigation (Wry: go_back/forward/reload/stop/can_*)
         SuiteCase("N01", "Navigation", "second navigation enables canGoBack"),
         SuiteCase("N02", "Navigation", "canGoForward false at tip of history"),

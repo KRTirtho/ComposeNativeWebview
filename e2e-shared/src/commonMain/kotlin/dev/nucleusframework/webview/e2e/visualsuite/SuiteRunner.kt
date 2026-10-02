@@ -137,6 +137,12 @@ internal suspend fun runFullSuite(
         loadUrlAwaitMarker(ctx.navigator, "switch-b", dataHtmlUrl(pageWithMarker("switch-b")))
         assertThat(markerOf(ctx.navigator) == "switch-b", "marker=${markerOf(ctx.navigator)}")
     }
+    case("C12") {
+        val darkPage = """<!doctype html><html><body style="margin:0;background:#101112;color:white"><div id="marker">dark-bg</div></body></html>"""
+        loadHtmlAwaitMarker(ctx.navigator, "dark-bg", darkPage)
+        val background = evalJsUnquoted(ctx.navigator, "getComputedStyle(document.body).backgroundColor")
+        assertThat(background == "rgb(16, 17, 18)", "page background overridden: $background")
+    }
 
     // ── Navigation (use data: URLs so WebKit builds real history) ─────
     case("N01", required = setOf(SuiteCapability.HistoryNavigation)) {
