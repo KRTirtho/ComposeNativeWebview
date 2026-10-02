@@ -23,10 +23,13 @@ typedef struct {
     WebKitWebContext *context;
     gulong decide_policy_handler;
     gulong ipc_handler;
+    gulong context_menu_handler;
     gulong hierarchy_handler;
     GtkWidget *host_window;
     gulong host_event_handler;
     GtkGesture *host_pointer_gesture;
+    GtkWidget *context_popover;
+    gboolean event_filter_installed;
 } ComposeWebViewState;
 
 /* jni_bridge.c */
@@ -55,5 +58,11 @@ void compose_webview_on_script_message(
     gpointer user_data);
 void compose_webview_connect_input_routing(ComposeWebViewState *state);
 void compose_webview_disconnect_input_routing(ComposeWebViewState *state);
+gboolean compose_webview_on_context_menu(
+    WebKitWebView *web_view,
+    WebKitContextMenu *context_menu,
+    GdkEvent *event,
+    WebKitHitTestResult *hit_test_result,
+    gpointer user_data);
 
 #endif /* COMPOSE_WEBVIEW_INTERNAL_H */

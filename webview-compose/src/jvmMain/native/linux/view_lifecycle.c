@@ -173,15 +173,16 @@ Java_dev_nucleusframework_webview_web_linux_WebKitLinuxBridge_nativeCreate(
 
     g_object_set_data(G_OBJECT(state->web_view), "compose-webview-state", state);
 
-    // Keep WebKit's default context-menu flow. Its GTK proxy binds each stock
-    // GAction to the active WebPageProxy while populating the native menu; a
-    // handler that takes over the menu before that point leaves those actions
-    // without a page and they silently do nothing.
+    // Use a non-modal in-window menu. WebKit has not bound its stock GActions
+    // to the page yet at this signal point, so the handler dispatches those
+    // commands through the WebKitWebView API instead of activating proxies.
     state->decide_policy_handler = g_signal_connect(
         state->web_view,
         "decide-policy",
         G_CALLBACK(compose_webview_on_decide_policy),
         state);
+    state->context_menu_handler = g_signal_connect(
+        state->web_view, "context-menu", G_CALLBACK(compose_webview_on_context_menu), state);
     compose_webview_connect_input_routing(state);
 
     return (jlong) (uintptr_t) state;
@@ -207,6 +208,16 @@ Java_dev_nucleusframework_webview_web_linux_WebKitLinuxBridge_nativeRelease(
 
     if (state->web_view != NULL) {
         compose_webview_disconnect_input_routing(state);
+        if (state->context_menu_handler != 0) {
+            g_signal_handler_disconnect(state->web_view, state->context_menu_handler);
+            state->context_menu_handler = 0;
+        }
+        if (state->context_popover != NULL) {
+            GtkWidget *popover = state->context_popover;
+            state->context_popover = NULL;
+            gtk_widget_destroy(popover);
+            g_object_unref(popover);
+        }
         if (state->decide_policy_handler != 0) {
             g_signal_handler_disconnect(state->web_view, state->decide_policy_handler);
             state->decide_policy_handler = 0;
