@@ -28,8 +28,9 @@ nucleus.application {
     mainClass = "dev.nucleusframework.webview.demo.MainKt"
 }
 
-// The host-OS native WebView backend is gitignored — build it before run if missing.
-tasks.matching { it.name == "run" || it.name == "jvmRun" }.configureEach {
+// The host-OS native WebView backend is gitignored — build it before run,
+// jvmRun and Compose Hot Reload's hotRunJvm so the dev classpath has the JNI library.
+tasks.matching { it.name == "run" || it.name == "jvmRun" || it.name == "hotRunJvm" }.configureEach {
     when {
         Os.isFamily(Os.FAMILY_WINDOWS) ->
             dependsOn(":webview-compose:buildNativeWindows")

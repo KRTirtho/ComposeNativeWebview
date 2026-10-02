@@ -1,14 +1,21 @@
 package dev.nucleusframework.webview.web
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.toComposeImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import dev.nucleusframework.core.runtime.Platform
 import dev.nucleusframework.webview.cookie.DesktopCookieManager
 import dev.nucleusframework.webview.jsbridge.WebViewJsBridge
@@ -27,9 +34,11 @@ import dev.nucleusframework.window.tao.NativeView
 import java.awt.image.BufferedImage
 import java.io.ByteArrayInputStream
 import javax.imageio.ImageIO
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import org.jetbrains.skia.Image as SkiaImage
 import kotlin.time.Duration.Companion.milliseconds
 
 actual class WebViewFactoryParam(
@@ -329,7 +338,12 @@ actual fun ActualWebView(
                 factory = { linuxWebView.asPlatformView() },
                 modifier = modifier,
                 update = { },
-                content = content,
+                content = {
+                    if (System.getProperty("compose.reload.isActive") == "true") {
+                        WebKitHotReloadPreview(linuxWebView)
+                    }
+                    content()
+                },
             )
             LaunchedEffect(nativeWebView) {
                 onCreated(nativeWebView)
@@ -376,6 +390,38 @@ actual fun ActualWebView(
             currentOnDispose(nativeWebView)
             nativeWebView.destroy()
         }
+    }
+}
+
+/**
+ * During Compose Hot Reload, the EGL scene can cover GTK's Cairo surface even
+ * while WebKit continues painting. Mirror WebKit's native snapshot in the
+ * Compose overlay in that development mode; GTK remains the input target.
+ */
+@Composable
+private fun WebKitHotReloadPreview(view: LinuxWebKitNativeWebView) {
+    var frame by remember(view) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(view) {
+        while (view.isReady()) {
+            try {
+                view.captureScreenshotAsync()?.let { png ->
+                    frame = SkiaImage.makeFromEncoded(png).toComposeImageBitmap()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // A resize or navigation can temporarily leave no snapshot.
+            }
+            delay(200.milliseconds)
+        }
+    }
+    frame?.let { image ->
+        Image(
+            bitmap = image,
+            contentDescription = null,
+            contentScale = ContentScale.FillBounds,
+            modifier = Modifier.fillMaxSize(),
+        )
     }
 }
 
