@@ -44,6 +44,7 @@ LIB_NAME="libcompose_webview_linux.so"
 SOURCES=(
     "$SCRIPT_DIR/jni_bridge.c"
     "$SCRIPT_DIR/view_signals.c"
+    "$SCRIPT_DIR/input_routing.c"
     "$SCRIPT_DIR/view_lifecycle.c"
     "$SCRIPT_DIR/navigation.c"
     "$SCRIPT_DIR/javascript.c"

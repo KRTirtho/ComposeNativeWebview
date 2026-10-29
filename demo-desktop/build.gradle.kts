@@ -28,6 +28,16 @@ nucleus.application {
     mainClass = "dev.nucleusframework.webview.demo.MainKt"
 }
 
+// Compose Hot Reload's agent starts AWT before main(), and JBR's X11 toolkit pins
+// GTK to XWayland, where the embedded WebKitWebView renders black. Tao owns the
+// window and never needs AWT, so the reloadable app JVM stays headless (the
+// DevTools window runs in its own JVM and is unaffected).
+if (Os.isFamily(Os.FAMILY_UNIX) && !Os.isFamily(Os.FAMILY_MAC)) {
+    tasks.withType<JavaExec>().matching { it.name.startsWith("hotRun") }.configureEach {
+        jvmArgs("-Djava.awt.headless=true")
+    }
+}
+
 // The host-OS native WebView backend is gitignored — build it before run if missing.
 tasks.matching { it.name == "run" || it.name == "jvmRun" }.configureEach {
     when {

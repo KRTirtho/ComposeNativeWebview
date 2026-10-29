@@ -23,6 +23,15 @@ typedef struct {
     WebKitWebContext *context;
     gulong decide_policy_handler;
     gulong ipc_handler;
+
+    /* input_routing.c */
+    gulong input_handlers[4];
+    GtkWidget *host_window;
+    gulong host_event_handler;
+    GtkWidget *press_source;
+    guint press_button;
+    gboolean press_shadowed;
+    guint replay_source_id;
 } ComposeWebViewState;
 
 /* jni_bridge.c */
@@ -49,5 +58,9 @@ void compose_webview_on_script_message(
     WebKitUserContentManager *manager,
     WebKitJavascriptResult *js_result,
     gpointer user_data);
+
+/* input_routing.c — wired during create, torn down in release */
+void compose_webview_connect_input_routing(ComposeWebViewState *state);
+void compose_webview_disconnect_input_routing(ComposeWebViewState *state);
 
 #endif /* COMPOSE_WEBVIEW_INTERNAL_H */

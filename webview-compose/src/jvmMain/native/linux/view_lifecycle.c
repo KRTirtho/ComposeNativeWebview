@@ -194,6 +194,7 @@ Java_dev_nucleusframework_webview_web_linux_WebKitLinuxBridge_nativeCreate(
         "decide-policy",
         G_CALLBACK(compose_webview_on_decide_policy),
         state);
+    compose_webview_connect_input_routing(state);
 
     return (jlong) (uintptr_t) state;
 }
@@ -217,6 +218,7 @@ Java_dev_nucleusframework_webview_web_linux_WebKitLinuxBridge_nativeRelease(
     if (state == NULL) return;
 
     if (state->web_view != NULL) {
+        compose_webview_disconnect_input_routing(state);
         if (state->decide_policy_handler != 0) {
             g_signal_handler_disconnect(state->web_view, state->decide_policy_handler);
             state->decide_policy_handler = 0;

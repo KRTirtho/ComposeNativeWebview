@@ -18,12 +18,17 @@ plugins {
 // Same pattern as Nucleus: compile host-arch natives into
 // src/jvmMain/resources/nucleus/native/{linux,darwin,win32}-{x64,aarch64}/.
 // CI builds via matrix and downloads artifacts before package/publish.
-// Locally, only the host platform is built (and only if the artifact is missing).
+// Locally, only the host platform is built, when the artifact is missing or older
+// than its sources (a branch switch or edit must not keep a stale library around;
+// CI's downloaded artifacts are newer than the checkout, so they are kept).
 
 val nativeLinuxDir = layout.projectDirectory.dir("src/jvmMain/native/linux")
 val nativeMacosDir = layout.projectDirectory.dir("src/jvmMain/native/macos")
 val nativeWindowsDir = layout.projectDirectory.dir("src/jvmMain/native/windows")
 val nativeResourceDir = layout.projectDirectory.dir("src/jvmMain/resources/nucleus/native")
+
+fun isOutdated(artifact: File, sources: Directory): Boolean =
+    !artifact.exists() || sources.asFileTree.any { it.lastModified() > artifact.lastModified() }
 
 val buildNativeLinux by tasks.registering(Exec::class) {
     description = "Compiles the WebKit2GTK JNI backend into libcompose_webview_linux.so"
@@ -35,7 +40,7 @@ val buildNativeLinux by tasks.registering(Exec::class) {
     onlyIf {
         Os.isFamily(Os.FAMILY_UNIX) &&
             !Os.isFamily(Os.FAMILY_MAC) &&
-            !checkFile.exists()
+            isOutdated(checkFile, nativeLinuxDir)
     }
     inputs.dir(nativeLinuxDir)
     outputs.file(checkFile)
@@ -50,7 +55,8 @@ val buildNativeMacos by tasks.registering(Exec::class) {
     val checkArm = nativeResourceDir.file("darwin-aarch64/libcompose_webview_macos.dylib").asFile
     val checkX64 = nativeResourceDir.file("darwin-x64/libcompose_webview_macos.dylib").asFile
     onlyIf {
-        Os.isFamily(Os.FAMILY_MAC) && (!checkArm.exists() || !checkX64.exists())
+        Os.isFamily(Os.FAMILY_MAC) &&
+            (isOutdated(checkArm, nativeMacosDir) || isOutdated(checkX64, nativeMacosDir))
     }
     inputs.dir(nativeMacosDir)
     outputs.files(checkArm, checkX64)
@@ -67,7 +73,8 @@ val buildNativeWindows by tasks.registering(Exec::class) {
     val checkFile = nativeResourceDir.file("$archDir/compose_webview_windows.dll").asFile
     val loaderFile = nativeResourceDir.file("$archDir/WebView2Loader.dll").asFile
     onlyIf {
-        Os.isFamily(Os.FAMILY_WINDOWS) && (!checkFile.exists() || !loaderFile.exists())
+        Os.isFamily(Os.FAMILY_WINDOWS) &&
+            (isOutdated(checkFile, nativeWindowsDir) || !loaderFile.exists())
     }
     inputs.dir(nativeWindowsDir)
     outputs.files(checkFile, loaderFile)
